@@ -2,7 +2,7 @@
 
 namespace ConstructiveMedia\IntranetPhonelist;
 
-use ConstructiveMedia\IntranetPhonelist\Admin\CompanyDivisions;
+use ConstructiveMedia\IntranetPhonelist\Admin\Relationships;
 use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
@@ -31,7 +31,7 @@ final class Plugin
 
         if (is_admin()) {
             (new SettingsPage($synchronizer, $log))->register();
-            (new CompanyDivisions())->register();
+            (new Relationships())->register();
         }
         if (defined('WP_CLI') && WP_CLI) {
             (new SyncCommand($synchronizer))->register();
