@@ -48,7 +48,7 @@ assert(Planner::hash(['A' => '1', 'B' => '2']) === Planner::hash(['B' => '2', 'A
 assert(Planner::hash(['A' => '1']) !== Planner::hash(['A' => '2']));
 
 // Editor layout covers every synced column exactly once; each row's widths add up to 100.
-$expected = ['division' => 9, 'staff' => 28];
+$expected = [PostTypes::DIVISION => 9, PostTypes::STAFF => 28];
 foreach (PostTypes::synced() as $type => $config) {
     assert(count($config['columns']) === $expected[$type] && count(array_unique($config['columns'])) === $expected[$type]);
     foreach ($config['fields'] as $tab => $columns) {
@@ -76,7 +76,7 @@ foreach ([
 }
 
 // Staff title: preferred name, else first name, then surname.
-$title = PostTypes::synced()['staff']['title'];
+$title = PostTypes::synced()[PostTypes::STAFF]['title'];
 assert($title(['PREF_NAME' => 'Janey', 'NAME_FIRST' => 'Jane', 'NAME_LAST_CO' => 'Citizen']) === 'Janey Citizen');
 assert($title(['PREF_NAME' => ' ', 'NAME_FIRST' => 'Jane', 'NAME_LAST_CO' => 'Citizen']) === 'Jane Citizen');
 

@@ -147,7 +147,7 @@ final class Phonelist
             $divisions = [];
             foreach (get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1]) as $post) {
                 $companyId = (int) get_post_meta($post->ID, 'company', true);
-                $divisions[(string) get_post_meta($post->ID, '_source_id', true)] = [
+                $divisions[(string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true)] = [
                     'name' => $post->post_title,
                     'company' => $companyId ? get_the_title($companyId) : '',
                 ];

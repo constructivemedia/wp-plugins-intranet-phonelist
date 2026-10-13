@@ -43,7 +43,7 @@ final class CompanyDivisions
             <?php foreach ($divisions as $division) : ?>
                 <tr>
                     <td><a href="<?= esc_url(get_edit_post_link($division->ID)) ?>"><?= esc_html($division->post_title) ?></a></td>
-                    <td><code><?= esc_html(get_post_meta($division->ID, '_source_id', true)) ?></code></td>
+                    <td><code><?= esc_html(get_post_meta($division->ID, PostTypes::SOURCE_ID, true)) ?></code></td>
                 </tr>
             <?php endforeach; ?>
             </tbody>

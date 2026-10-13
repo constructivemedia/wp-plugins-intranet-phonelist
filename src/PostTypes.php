@@ -11,9 +11,16 @@ final class PostTypes
     /** Two-digit years resolve to the most recent past year: a birth date is never in the future. */
     public const BIRTH_DATE = 'birth_date';
 
-    public const COMPANY = 'company';
-    public const DIVISION = 'division';
-    public const STAFF = 'staff';
+    /** Prefix for everything this plugin puts in WordPress's shared namespaces. */
+    private const PREFIX = 'iphl_';
+
+    public const COMPANY = self::PREFIX . 'company';
+    public const DIVISION = self::PREFIX . 'division';
+    public const STAFF = self::PREFIX . 'staff';
+
+    /** Post meta on synced posts: the Oracle key, and the fingerprint of the last synced row. */
+    public const SOURCE_ID = '_' . self::PREFIX . 'source_id';
+    public const SOURCE_HASH = '_' . self::PREFIX . 'source_hash';
 
     /** Who can see and manage Phonelist in the admin. */
     public const CAPABILITY = 'manage_options';
@@ -113,7 +120,15 @@ final class PostTypes
 
     public static function fieldKey(string $type, string $column): string
     {
-        return 'field_iphl_' . $type . '_' . strtolower($column);
+        return 'field_iphl_' . self::shortName($type) . '_' . strtolower($column);
+    }
+
+    /**
+     * 'iphl_staff' → 'staff', for ACF keys (already prefixed, and stored against every post, so kept stable).
+     */
+    private static function shortName(string $type): string
+    {
+        return substr($type, strlen(self::PREFIX));
     }
 
     /**
@@ -168,7 +183,7 @@ final class PostTypes
         foreach (self::synced() as $type => $config) {
             $fields = [];
             foreach ($config['fields'] as $tab => $columns) {
-                $fields[] = ['key' => "field_iphl_{$type}_tab_" . sanitize_key($tab), 'label' => $tab, 'type' => 'tab'];
+                $fields[] = ['key' => 'field_iphl_' . self::shortName($type) . '_tab_' . sanitize_key($tab), 'label' => $tab, 'type' => 'tab'];
                 foreach ($columns as $column => [$label, $width]) {
                     $date = isset($config['dates'][$column]) ? ['type' => 'date_picker', 'display_format' => 'j M Y', 'return_format' => 'Ymd'] : [];
                     $fields[] = $date + [
@@ -183,7 +198,7 @@ final class PostTypes
             }
 
             acf_add_local_field_group([
-                'key' => 'group_iphl_' . $type,
+                'key' => 'group_iphl_' . self::shortName($type),
                 'title' => $config['group'],
                 'fields' => $fields,
                 'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => $type]]],

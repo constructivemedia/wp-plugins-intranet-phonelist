@@ -14,12 +14,12 @@ Replace the legacy phone list sync script with a WordPress plugin that mirrors s
 | Driver | `oci8` PHP extension (PECL) + Oracle Instant Client. No ORDS available. |
 | Read-only | Code runs only `SELECT`. JWH IT to supply an account with `SELECT` on those two tables only. |
 | Credentials | `.env` → `wp-config.php` constants: `INTRANET_PHONELIST_ORACLE_DSN`, `INTRANET_PHONELIST_ORACLE_USER`, `INTRANET_PHONELIST_ORACLE_PASSWORD`. |
-| Storage | Synced CPTs `staff` and `division` (one ACF field per synced Oracle column, read-only). Manual CPT `company` (about 10 posts, entered by hand). ACF required, Admin Columns optional. |
-| Keys | Staff: `ID`. Division: `DIV_CODE`. Stored as post meta `_source_id` and treated as **opaque strings**: no trimming or casting (`00001` ≠ `1`; UUIDs are fine). The internal ID is the WordPress post ID. |
+| Storage | Synced CPTs `iphl_staff` and `iphl_division` (one ACF field per synced Oracle column, read-only). Manual CPT `iphl_company` (about 10 posts, entered by hand). Everything in WordPress's shared namespaces is prefixed `iphl_`. ACF required, Admin Columns optional. |
+| Keys | Staff: `ID`. Division: `DIV_CODE`. Stored as post meta `_iphl_source_id` and treated as **opaque strings**: no trimming or casting (`00001` ≠ `1`; UUIDs are fine). The internal ID is the WordPress post ID. |
 | Which divisions | Full sync keeps only divisions that **at least one current staff member** belongs to (exact `DIV_CODE` match), about 18 of 69. `DIVISIONS` has no status flag, so this drops defunct and dummy divisions, and a division is deleted once its last person leaves. |
 | Hierarchy | Company (manual) → Division (synced) → Staff (synced). A division's editable ACF `company` field (post_object, ID) points at its company; the sync never writes it. Staff link to their division by `div_code` = `DIV_CODE`. The settings page lists divisions with no company. Oracle's `COMPANY_ID` follows the legal entity, not the brand, so it isn't used. |
 | Leavers | Oracle's source already excludes leavers. **Full sync**: any key missing from Oracle, or with `PH_EXT = 'LEFT'`, is **permanently deleted** and logged. **Single sync**: only that person is created, updated or deleted. |
-| Change detection | `_source_hash` meta = md5 of the source row. An unchanged hash means no write and no log entry. |
+| Change detection | `_iphl_source_hash` meta = md5 of the source row. An unchanged hash means no write and no log entry. |
 | Log | Custom table, kept forever, viewable and deletable in settings. |
 | DOB | Synced for the birthday list. `HIDE_BIRTHDAY` (the HR opt-out) is synced alongside it and must be respected by any display. |
 
@@ -67,7 +67,7 @@ One array per post type (`ORACLE_COLUMN => acf_field_name`, lowercased). Post ti
 1. **Lock**: `add_option` lock, which is atomic; a lock older than 1 hour is treated as dead. If a lock is held → log `error` and return.
 2. **Fetch** (`OracleSource`): `SELECT <mapped columns>` from `DIVISIONS` and `PHONE_LIST_INTRANET`. On a full sync, divisions are then narrowed to those with at least one current staff member. A connection or query failure, an empty table, or no staffed divisions → log `error` and abort. **Nothing is deleted.**
 3. **Plan** (`Planner::plan()`, pure): `$existing` is `source_id => [post_id, source_id, hash]`. It returns `create`, `update` and `delete` lists. Rows with `PH_EXT = 'LEFT'` are treated as absent, so they get deleted.
-4. **Apply**: divisions first, then staff. Create/update via `wp_insert_post` / `wp_update_post`, plus `update_field` per mapped column and `_source_id` / `_source_hash` meta. Delete via `wp_delete_post($id, true)`. Each create, update and delete gets one log row. A per-row failure → log `error` and continue.
+4. **Apply**: divisions first, then staff. Create/update via `wp_insert_post` / `wp_update_post`, plus `update_field` per mapped column and `_iphl_source_id` / `_iphl_source_hash` meta. Delete via `wp_delete_post($id, true)`. Each create, update and delete gets one log row. A per-row failure → log `error` and continue.
 5. **Finish**: log `sync_end` with the counts; on a full sync, store the `intranet_phonelist_last_sync` option (time, trigger, status, message); release the lock.
 
 The hash covers the Oracle row only, so changing how titles are built won't touch existing posts until their Oracle data changes.

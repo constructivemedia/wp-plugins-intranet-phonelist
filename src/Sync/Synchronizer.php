@@ -126,7 +126,7 @@ final class Synchronizer
                     'post_type' => $type,
                     'post_status' => 'publish',
                     'post_title' => $title,
-                    'meta_input' => ['_source_id' => $id, '_source_hash' => $item['hash']],
+                    'meta_input' => [PostTypes::SOURCE_ID => $id, PostTypes::SOURCE_HASH => $item['hash']],
                 ];
                 $postId = $operation === 'create'
                     ? wp_insert_post($post, true)
@@ -167,9 +167,11 @@ final class Synchronizer
         $results = $this->db->get_results($this->db->prepare(
             "SELECT p.ID AS post_id, sid.meta_value AS source_id, h.meta_value AS hash
             FROM {$this->db->posts} p
-            JOIN {$this->db->postmeta} sid ON sid.post_id = p.ID AND sid.meta_key = '_source_id'
-            LEFT JOIN {$this->db->postmeta} h ON h.post_id = p.ID AND h.meta_key = '_source_hash'
+            JOIN {$this->db->postmeta} sid ON sid.post_id = p.ID AND sid.meta_key = %s
+            LEFT JOIN {$this->db->postmeta} h ON h.post_id = p.ID AND h.meta_key = %s
             WHERE p.post_type = %s",
+            PostTypes::SOURCE_ID,
+            PostTypes::SOURCE_HASH,
             $type
         ));
 

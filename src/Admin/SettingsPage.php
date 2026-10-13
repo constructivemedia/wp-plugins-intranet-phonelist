@@ -85,7 +85,7 @@ final class SettingsPage
                     <p><strong><?= count($unassigned) ?> division(s) have no company:</strong></p>
                     <ul style="list-style:disc;margin-left:20px">
                         <?php foreach ($unassigned as $division) : ?>
-                            <li><a href="<?= esc_url(get_edit_post_link($division->ID)) ?>"><?= esc_html($division->post_title) ?></a> (<?= esc_html(get_post_meta($division->ID, '_source_id', true)) ?>)</li>
+                            <li><a href="<?= esc_url(get_edit_post_link($division->ID)) ?>"><?= esc_html($division->post_title) ?></a> (<?= esc_html(get_post_meta($division->ID, PostTypes::SOURCE_ID, true)) ?>)</li>
                         <?php endforeach; ?>
                     </ul>
                 </div>
