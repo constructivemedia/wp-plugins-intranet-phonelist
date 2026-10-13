@@ -103,7 +103,7 @@ In the site's `composer.json`:
 ```json
 {
     "repositories": [
-        { "type": "vcs", "url": "<this repository's git URL>" }
+        { "type": "vcs", "url": "https://github.com/constructivemedia/wp-plugins-intranet-phonelist.git" }
     ],
     "require": {
         "constructivemedia/intranet-phonelist": "^1.0"
