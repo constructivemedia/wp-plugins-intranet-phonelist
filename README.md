@@ -96,9 +96,35 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 
 Tests: `ddev exec php -d zend.assertions=1 tests/plan-check.php`
 
+## Installing with Composer
+
+In the site's `composer.json`:
+
+```json
+{
+    "repositories": [
+        { "type": "vcs", "url": "<this repository's git URL>" }
+    ],
+    "require": {
+        "constructivemedia/intranet-phonelist": "^1.0"
+    }
+}
+```
+
+The plugin installs to `wp-content/plugins/intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
+
+## Releasing
+
+Composer reads versions from **git tags**, so `composer.json` has no `version` field.
+
+1. Bump `Version:` in `intranet-phonelist.php`.
+2. Commit, then tag with the same number and push: `git tag v1.1.2 && git push origin v1.1.2`.
+
+A constraint like `^1.1.2` then picks up `v1.1.2` and anything later below 2.0. Release archives leave out `.ddev/`, `docs/`, `tests/` and the dev `wp-config.php` (see `.gitattributes`).
+
 ## Deploying
 
-Run `composer install --no-dev` so `vendor/autoload.php` ships without the dev-only packages (WordPress, the bundled plugins, dotenv). Then set the three `INTRANET_PHONELIST_ORACLE_*` constants in the production `wp-config.php`, install `oci8` on the server, and add the nightly cron.
+Set the three `INTRANET_PHONELIST_ORACLE_*` constants in the production `wp-config.php`, install `oci8` on the server, activate the plugin, and add the nightly cron.
 
 Run the **first** sync with `wp phonelist sync`, not **Sync Now**. Creating every post takes about a minute, which is longer than most servers let a web request run. Later syncs only touch what changed and take a few seconds.
 

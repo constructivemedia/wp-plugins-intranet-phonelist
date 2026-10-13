@@ -4,9 +4,8 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "6846a2c1295a739a1746ff82e1b04862",
-    "packages": [],
-    "packages-dev": [
+    "content-hash": "4f13d62262576082f771a77a77b7638d",
+    "packages": [
         {
             "name": "composer/installers",
             "version": "v2.3.0",
@@ -152,7 +151,9 @@
                 }
             ],
             "time": "2024-06-24T20:46:46+00:00"
-        },
+        }
+    ],
+    "packages-dev": [
         {
             "name": "graham-campbell/result-type",
             "version": "v1.2.0",
