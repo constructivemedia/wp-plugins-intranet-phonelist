@@ -1,0 +1,7 @@
+/.ddev/*
+!/.ddev/config.yaml
+!/.ddev/web-build/
+/wp/
+/vendor/
+/.env
+/oracle-access-review.md

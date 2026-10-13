@@ -1,0 +1,44 @@
+{
+    "name": "constructivemedia/intranet-phonelist",
+    "description": "Intranet phone list WordPress plugin.",
+    "type": "wordpress-plugin",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "ConstructiveMedia\\IntranetPhonelist\\": "src/"
+        }
+    },
+    "require-dev": {
+        "johnpbloch/wordpress": "^7.1",
+        "wpackagist-plugin/advanced-custom-fields": "^6.8",
+        "wpackagist-plugin/codepress-admin-columns": "^7.1",
+        "vlucas/phpdotenv": "^5.7"
+    },
+    "repositories": [
+        {
+            "type": "composer",
+            "url": "https://wpackagist.org",
+            "only": ["wpackagist-plugin/*"]
+        }
+    ],
+    "extra": {
+        "wordpress-install-dir": "wp",
+        "installer-paths": {
+            "wp/wp-content/plugins/{$name}/": ["type:wordpress-plugin"]
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "johnpbloch/wordpress-core-installer": true,
+            "composer/installers": true
+        }
+    },
+    "scripts": {
+        "link-plugin": "[ -e wp/wp-content/plugins/intranet-phonelist ] || ln -s ../../.. wp/wp-content/plugins/intranet-phonelist",
+        "post-install-cmd": "@link-plugin",
+        "post-update-cmd": "@link-plugin"
+    }
+}
