@@ -4,7 +4,7 @@ Date: 2026-10-13
 
 ## Goal
 
-Replace the legacy `payroll_phonelist` sync script with a WordPress plugin that mirrors staff and divisions from JWH's Oracle database into custom post types with ACF fields, grouped under hand-managed companies. It runs nightly from cron via WP-CLI or on demand from a **Sync Now** button, and every change goes into an audit log.
+Replace the legacy phone list sync script with a WordPress plugin that mirrors staff and divisions from JWH's Oracle database into custom post types with ACF fields, grouped under hand-managed companies. It runs nightly from cron via WP-CLI or on demand from a **Sync Now** button, and every change goes into an audit log.
 
 ## Decisions
 

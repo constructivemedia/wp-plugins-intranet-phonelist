@@ -15,6 +15,9 @@ final class PostTypes
     public const DIVISION = 'division';
     public const STAFF = 'staff';
 
+    /** Who can see and manage Phonelist in the admin. */
+    public const CAPABILITY = 'manage_options';
+
     /** The Phonelist menu opens the Staff list. */
     public const MENU = 'edit.php?post_type=' . self::STAFF;
 
@@ -125,12 +128,15 @@ final class PostTypes
     {
         $types = [self::COMPANY => ['singular' => 'Company', 'plural' => 'Companies']] + self::synced();
 
+        // Administrators only: staff records hold HR data (DOB, home phone).
+        $create = ['create_posts'];
+        $delete = ['delete_posts', 'delete_published_posts', 'delete_others_posts', 'delete_private_posts'];
+        $edit = ['edit_posts', 'edit_others_posts', 'edit_published_posts', 'edit_private_posts', 'publish_posts', 'read_private_posts'];
+        $adminOnly = array_fill_keys([...$create, ...$delete, ...$edit], self::CAPABILITY);
+
         // Synced types can be viewed and edited (e.g. a division's Company) but not added or deleted by hand:
         // a hand-made post has no Oracle ID, so the sync would never manage it.
-        $syncedOnly = array_fill_keys(
-            ['create_posts', 'delete_posts', 'delete_published_posts', 'delete_others_posts', 'delete_private_posts'],
-            'do_not_allow',
-        );
+        $syncedOnly = array_fill_keys([...$create, ...$delete], 'do_not_allow') + $adminOnly;
 
         // Registration order is the submenu order: Companies, Divisions, Staff.
         foreach ($types as $type => $config) {
@@ -141,7 +147,7 @@ final class PostTypes
                 'show_in_menu' => self::MENU,
                 'supports' => ['title'],
                 'map_meta_cap' => true,
-                'capabilities' => $type === self::COMPANY ? [] : $syncedOnly,
+                'capabilities' => $type === self::COMPANY ? $adminOnly : $syncedOnly,
             ]);
         }
     }
@@ -152,7 +158,7 @@ final class PostTypes
      */
     public function registerMenu(): void
     {
-        add_menu_page('Phonelist', 'Phonelist', 'edit_posts', self::MENU, '', 'dashicons-phone', 26);
+        add_menu_page('Phonelist', 'Phonelist', self::CAPABILITY, self::MENU, '', 'dashicons-phone', 26);
         add_action('admin_menu', fn () => remove_submenu_page(self::MENU, self::MENU), 99);
     }
 

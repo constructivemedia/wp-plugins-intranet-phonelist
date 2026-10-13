@@ -4,6 +4,9 @@
  * Values come from .env (gitignored) when set, otherwise the DDEV defaults below.
  */
 
+// Dev only: never runs on a site where the plugin is installed.
+getenv('IS_DDEV_PROJECT') === 'true' || exit;
+
 require __DIR__ . '/vendor/autoload.php';
 Dotenv\Dotenv::createImmutable( __DIR__ )->safeLoad();
 

@@ -128,4 +128,4 @@ Set the three `INTRANET_PHONELIST_ORACLE_*` constants in the production `wp-conf
 
 Run the **first** sync with `wp phonelist sync`, not **Sync Now**. Creating every post takes about a minute, which is longer than most servers let a web request run. Later syncs only touch what changed and take a few seconds.
 
-Staff and divisions can't be added or deleted by hand; the sync manages them. They can still be opened and edited (e.g. a division's **Company**).
+The **Phonelist** admin area is for administrators only (`manage_options`), because staff records hold HR data. Staff and divisions can't be added or deleted by hand; the sync manages them. They can still be opened and edited (e.g. a division's **Company**).

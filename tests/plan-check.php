@@ -1,6 +1,8 @@
 <?php
 // Run: ddev exec php -d zend.assertions=1 tests/plan-check.php
 
+PHP_SAPI === 'cli' || exit;
+
 require __DIR__ . '/../vendor/autoload.php';
 
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
