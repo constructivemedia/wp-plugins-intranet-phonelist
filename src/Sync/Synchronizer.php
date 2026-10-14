@@ -34,6 +34,7 @@ final class Synchronizer
     public function __construct(
         private readonly OracleSource $source,
         private readonly Photos $photos,
+        private readonly CompanyMap $companies,
         private readonly Log $log,
         private readonly wpdb $db,
     ) {
@@ -74,6 +75,9 @@ final class Synchronizer
                 $this->apply($type, $config, $plan);
             }
 
+            if ($full) {
+                $this->linkCompanies();
+            }
             if ($this->photos->enabled()) {
                 $this->attachPhotos($rows[PostTypes::STAFF]);
             }
@@ -261,14 +265,98 @@ final class Synchronizer
     private function flushPending(): void
     {
         foreach ($this->pending as $entry) {
-            $context = ['oracle' => Planner::redact($this->raw[$entry['type']][$entry['id']] ?? [])];
-            if ($entry['changes']) {
-                $context = ['changes' => $entry['changes']] + $context;
-            }
+            $oracle = Planner::redact($this->raw[$entry['type']][$entry['id']] ?? []);
+            $context = array_filter(['changes' => $entry['changes'], 'oracle' => $oracle]); // No Oracle row when applied from settings.
             $message = $entry['action'] === 'updated' ? implode(', ', array_keys($entry['changes'])) : null;
             $this->record('info', $entry['action'], $entry['type'], $entry['id'], $entry['title'], $message, $context);
         }
         $this->pending = [];
+    }
+
+    /**
+     * Apply the company mapping straight after it's saved in settings, without a full sync. Logged as its own run.
+     *
+     * @return array{status: string, counts: array<string, int>}
+     */
+    public function applyCompanyMap(): array
+    {
+        $this->runId = wp_generate_uuid4();
+        $this->trigger = 'manual';
+        $this->counts = ['created' => 0, 'updated' => 0, 'deleted' => 0, 'errors' => 0, 'photos' => 0, 'no_photo' => 0];
+        $this->raw = [];
+        $this->pending = [];
+
+        if (!$this->lock()) {
+            return ['status' => 'failed', 'counts' => $this->counts];
+        }
+        $this->record('info', 'company_map', message: 'Company mapping saved.', context: ['map' => $this->companies->get()]);
+        try {
+            $this->linkCompanies();
+        } finally {
+            $this->flushPending();
+            delete_option(self::LOCK);
+        }
+
+        return ['status' => $this->counts['errors'] ? 'completed_with_errors' : 'completed', 'counts' => $this->counts];
+    }
+
+    /**
+     * Create mapped companies that don't exist yet and point each mapped division at its company.
+     * Companies are matched by name and never deleted; divisions not in the mapping are left alone.
+     */
+    private function linkCompanies(): void
+    {
+        $map = $this->companies->get();
+        if (!$map) {
+            return;
+        }
+
+        $companyIds = [];
+        foreach (get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'post_status' => 'any']) as $company) {
+            $companyIds[$company->post_title] ??= $company->ID;
+        }
+
+        foreach (array_keys($map) as $name) {
+            $name = (string) $name;
+            if (isset($companyIds[$name])) {
+                continue;
+            }
+            $id = wp_insert_post(['post_type' => PostTypes::COMPANY, 'post_status' => 'publish', 'post_title' => $name], true);
+            if (is_wp_error($id)) {
+                $this->counts['errors']++;
+                $this->record('error', 'error', PostTypes::COMPANY, label: $name, message: $id->get_error_message());
+                continue;
+            }
+            $companyIds[$name] = $id;
+            $this->counts['created']++;
+            $this->record('info', 'created', PostTypes::COMPANY, label: $name, message: 'From the company mapping.');
+        }
+
+        ['divisions' => $mapped, 'conflicts' => $conflicts] = CompanyMap::byDivision($map);
+        if ($conflicts) {
+            $items = array_map(fn (string $code, array $names): array => ['code' => $code, 'label' => implode(' / ', $names)], array_keys($conflicts), $conflicts);
+            $this->record('warning', 'company_map', message: count($conflicts) . ' division(s) are listed under more than one company; the first is used.', context: ['items' => $items]);
+        }
+
+        $divisions = $this->existing(PostTypes::DIVISION);
+        foreach ($mapped as $code => $name) {
+            if (!isset($divisions[$code], $companyIds[$name])) {
+                continue; // Division not synced (e.g. no current staff), or its company failed to save.
+            }
+            $postId = $divisions[$code]['post_id'];
+            $current = (int) get_post_meta($postId, 'company', true);
+            if ($current === $companyIds[$name]) {
+                continue;
+            }
+
+            update_field('field_iphl_division_company', $companyIds[$name], $postId);
+            if (!isset($this->pending[PostTypes::DIVISION . "|$code"])) {
+                $this->counts['updated']++;
+            }
+            $this->pend(PostTypes::DIVISION, $code, get_the_title($postId), 'updated', [
+                'COMPANY' => ['from' => $current ? get_the_title($current) : '', 'to' => $name],
+            ]);
+        }
     }
 
     private function warnUnassignedDivisions(): void

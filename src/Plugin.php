@@ -6,6 +6,7 @@ use ConstructiveMedia\IntranetPhonelist\Admin\Relationships;
 use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
+use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Sync\Log;
 use ConstructiveMedia\IntranetPhonelist\Sync\OracleSource;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
@@ -23,7 +24,8 @@ final class Plugin
         $log = new Log($wpdb);
         $log->maybeUpgrade();
         $photos = Photos::fromConstants();
-        $synchronizer = new Synchronizer(OracleSource::fromConstants(), $photos, $log, $wpdb);
+        $companies = new CompanyMap();
+        $synchronizer = new Synchronizer(OracleSource::fromConstants(), $photos, $companies, $log, $wpdb);
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
@@ -33,7 +35,7 @@ final class Plugin
         register_activation_hook($pluginFile, [$log, 'install']);
 
         if (is_admin()) {
-            (new SettingsPage($synchronizer, $photos, $log))->register();
+            (new SettingsPage($synchronizer, $photos, $companies, $log))->register();
             (new Relationships())->register();
         }
         if (defined('WP_CLI') && WP_CLI) {

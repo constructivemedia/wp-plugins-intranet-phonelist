@@ -8,6 +8,7 @@ require __DIR__ . '/../vendor/autoload.php';
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Staff;
+use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Planner;
 
@@ -84,6 +85,15 @@ assert(Planner::redact(['ID' => '1', 'DOB' => '19850905', 'HOME_PHONE' => '9999'
 $raw = ['DOB' => '31Feb85', 'START_DATE' => 'N/A', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '05Sep85'];
 $normalized = ['DOB' => '', 'START_DATE' => '', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '19850905'];
 assert(Planner::unreadableDates($raw, $normalized, array_fill_keys(array_keys($raw), PostTypes::DATE)) === ['DOB']); // 'N/A' and '' are empty on purpose
+
+// Company mapping: one company per line, codes split by commas/spaces, blank lines ignored, round-trips.
+$map = CompanyMap::parse("WA Country Builders: GTN, BSN,BNB  ALB\n\nJWH Group: JWH, JIT\nJWH Group: JIT, CME\nNo Codes Yet:\n");
+assert($map === ['WA Country Builders' => ['GTN', 'BSN', 'BNB', 'ALB'], 'JWH Group' => ['JWH', 'JIT', 'CME'], 'No Codes Yet' => []]);
+assert(CompanyMap::parse(CompanyMap::format($map)) === $map);
+assert(CompanyMap::parse('') === []);
+$byDivision = CompanyMap::byDivision(['A' => ['X', 'Y'], 'B' => ['Y', 'Z']]);
+assert($byDivision['divisions'] === ['X' => 'A', 'Y' => 'A', 'Z' => 'B']); // first listing wins
+assert($byDivision['conflicts'] === ['Y' => ['A', 'B']]);
 
 // Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.
 $photoRow = fn (string $pref, string $first, string $last, string $div = 'JWH') => ['PREF_NAME' => $pref, 'NAME_FIRST' => $first, 'NAME_LAST_CO' => $last, 'DIV_CODE' => $div];

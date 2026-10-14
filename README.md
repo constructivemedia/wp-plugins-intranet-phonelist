@@ -37,6 +37,7 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
 - **Settings → Phonelist** has three tabs:
   - **Sync:** the last result, any errors or warnings from it, and **Sync Now**.
   - **Logs:** the audit log, filterable by run, level and action.
+  - **Companies:** the division → company mapping (below).
   - **Photos:** how many staff have a photo, and who doesn't, with the file names looked for.
 - **Log levels:**
   - `error`: failures.
@@ -49,7 +50,16 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
   - Divisions are synced only while at least one current staff member belongs to them.
   - IDs are matched as exact strings, so `00001` ≠ `1`.
   - Nothing is deleted if Oracle can't be read or returns no rows.
-- **Companies are entered by hand.** Create them under **Companies**, then set each division's **Company** field. The sync never touches either.
+- **Companies come from a mapping in Settings → Phonelist → Companies,** because Oracle's `COMPANY_ID` follows the legal entity rather than the brand. Enter one company per line, followed by its division codes:
+
+  ```
+  JWH Group: JWH, JIT
+  WA Country Builders: GTN, BSN, BNB, ALB, CDR
+  ```
+
+  - **On save, and on every full sync:** missing companies are created, and each listed division's **Company** is set. A change is logged as `COMPANY: from → to`.
+  - **The mapping wins** for the divisions it lists. Divisions not listed can still be set by hand on the division; any left without a company are flagged as a `no_company` warning.
+  - **Companies are matched by name and never deleted.**
 
 ## Staff photos
 
@@ -118,8 +128,8 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 | `src/Plugin.php` | Wires everything together; the only place objects are built |
 | `src/PostTypes.php` | Post types, the Oracle column mapping, ACF fields |
 | `src/Phonelist.php`, `src/Staff.php` | Public theme API and the value object it returns |
-| `src/Sync/` | `OracleSource` (SELECTs), `Planner` (pure diff and log payloads), `Synchronizer` (runs a sync), `Photos` (photo folder → Media Library), `Log` (audit table, self-upgrading) |
-| `src/Admin/` | `SettingsPage` (Sync, Logs and Photos tabs), `Relationships` (boxes on the edit screens) |
+| `src/Sync/` | `OracleSource` (SELECTs), `Planner` (pure diff and log payloads), `Synchronizer` (runs a sync), `Photos` (photo folder → Media Library), `CompanyMap` (division → company mapping), `Log` (audit table, self-upgrading) |
+| `src/Admin/` | `SettingsPage` (Sync, Logs, Companies and Photos tabs), `Relationships` (boxes on the edit screens) |
 | `src/Cli/SyncCommand.php`, `src/Api/StaffController.php` | WP-CLI command, REST route |
 
 Tests: `ddev exec php -d zend.assertions=1 tests/plan-check.php`
@@ -139,6 +149,8 @@ In the site's `composer.json`:
 }
 ```
 
+The repository is private, so each site needs GitHub access: either a token (`composer config --global github-oauth.github.com <token>`), or an SSH key with `"url": "git@github.com:constructivemedia/wp-plugins-intranet-phonelist.git"`. Source installs (`--prefer-source`, a git clone) work the same as release zips.
+
 The plugin installs to `wp-content/plugins/intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
 
 ## Releasing
@@ -152,7 +164,7 @@ A constraint like `^1.1.2` then picks up `v1.1.2` and anything later below 2.0, 
 
 ## Deploying
 
-Set the three `INTRANET_PHONELIST_ORACLE_*` constants in the production `wp-config.php`, install `oci8` on the server, activate the plugin, and add the nightly cron.
+Set the three `INTRANET_PHONELIST_ORACLE_*` constants (and `INTRANET_PHONELIST_PHOTOS_DIR`) in the production `wp-config.php`, install `oci8` on the server, activate the plugin, enter the company mapping under **Settings → Phonelist → Companies**, and add the nightly cron.
 
 Run the **first** sync with `wp phonelist sync`, not **Sync Now**. Creating every post takes about a minute, which is longer than most servers let a web request run. Later syncs only touch what changed and take a few seconds.
 

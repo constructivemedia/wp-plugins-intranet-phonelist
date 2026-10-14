@@ -3,24 +3,26 @@
 namespace ConstructiveMedia\IntranetPhonelist\Admin;
 
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
+use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Sync\Log;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
 
 /**
- * Settings → Phonelist, in three tabs: Sync (last result, Sync Now), Logs (filterable audit log with payloads)
- * and Photos (staff without a photo).
+ * Settings → Phonelist: Sync (last result, Sync Now), Logs (filterable audit log with payloads),
+ * Companies (division → company mapping) and Photos (staff without a photo).
  */
 final class SettingsPage
 {
     private const SLUG = 'intranet-phonelist';
     private const PER_PAGE = 100;
-    private const TABS = ['sync' => 'Sync', 'logs' => 'Logs', 'photos' => 'Photos'];
+    private const TABS = ['sync' => 'Sync', 'logs' => 'Logs', 'companies' => 'Companies', 'photos' => 'Photos'];
     private const LEVEL_COLOURS = ['error' => '#d63638', 'warning' => '#996800', 'notice' => '#2271b1', 'info' => '#50575e', 'debug' => '#8c8f94'];
 
     public function __construct(
         private readonly Synchronizer $synchronizer,
         private readonly Photos $photos,
+        private readonly CompanyMap $companies,
         private readonly Log $log,
     ) {
     }
@@ -30,6 +32,20 @@ final class SettingsPage
         add_action('admin_menu', fn () => add_options_page('Phonelist', 'Phonelist', 'manage_options', self::SLUG, [$this, 'render']));
         add_action('admin_post_intranet_phonelist_sync', [$this, 'handleSync']);
         add_action('admin_post_intranet_phonelist_delete_logs', [$this, 'handleDeleteLogs']);
+        add_action('admin_post_intranet_phonelist_save_companies', [$this, 'handleSaveCompanies']);
+    }
+
+    public function handleSaveCompanies(): void
+    {
+        $this->authorize('intranet_phonelist_save_companies');
+        $this->companies->save(CompanyMap::parse(sanitize_textarea_field(wp_unslash($_POST['companies'] ?? ''))));
+        $result = $this->synchronizer->applyCompanyMap();
+        $this->redirect([
+            'tab' => 'companies',
+            'notice' => $result['status'] === 'failed' ? 'companies_busy' : 'companies_saved',
+            'created' => $result['counts']['created'],
+            'updated' => $result['counts']['updated'],
+        ]);
     }
 
     public function handleSync(): void
@@ -53,6 +69,8 @@ final class SettingsPage
             'synced' => ['success', 'Sync completed.'],
             'sync_failed' => ['error', 'Sync did not complete cleanly. See the log.'],
             'logs_deleted' => ['success', sprintf('Deleted %d log entries.', absint($_GET['count'] ?? 0))],
+            'companies_saved' => ['success', sprintf('Mapping saved: %d companies created, %d divisions updated.', absint($_GET['created'] ?? 0), absint($_GET['updated'] ?? 0))],
+            'companies_busy' => ['warning', 'Mapping saved. A sync is running, so it will be applied by that sync or the next one.'],
         ];
         $notice = $notices[$_GET['notice'] ?? ''] ?? null;
         ?>
@@ -69,11 +87,77 @@ final class SettingsPage
             <?php endif; ?>
 
             <?php match ($tab) {
+                'companies' => $this->renderCompanies(),
                 'photos' => $this->renderPhotos(),
                 'logs' => $this->renderLogs(),
                 default => $this->renderSync(),
             }; ?>
         </div>
+        <?php
+    }
+
+    private function renderCompanies(): void
+    {
+        $map = $this->companies->get();
+        ['divisions' => $mapped, 'conflicts' => $conflicts] = CompanyMap::byDivision($map);
+
+        // Synced divisions by code, with their current company and staff count.
+        $divisions = [];
+        foreach (get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']) as $division) {
+            $code = (string) get_post_meta($division->ID, PostTypes::SOURCE_ID, true);
+            $divisions[$code] = $division;
+        }
+        $unmapped = array_diff_key($divisions, $mapped);
+        ?>
+        <p>One company per line, then its division codes: <code>WA Country Builders: GTN, BSN, BNB, ALB, CDR</code>.
+            Saving creates any missing companies and sets each listed division's Company; every full sync re-applies it.
+            Divisions not listed here can be set by hand on the division.</p>
+
+        <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>">
+            <input type="hidden" name="action" value="intranet_phonelist_save_companies">
+            <?php wp_nonce_field('intranet_phonelist_save_companies'); ?>
+            <textarea name="companies" rows="<?= max(6, count($map) + 2) ?>" class="large-text code" style="max-width:900px"><?= esc_textarea(CompanyMap::format($map)) ?></textarea>
+            <?php submit_button('Save and apply', 'primary', 'submit', false); ?>
+        </form>
+
+        <?php if ($conflicts) : ?>
+            <div class="notice notice-warning inline"><p>Listed under more than one company (the first is used):
+                <?= esc_html(implode(', ', array_map(fn (string $code, array $names): string => "$code (" . implode(' / ', $names) . ')', array_keys($conflicts), $conflicts))) ?></p></div>
+        <?php endif; ?>
+
+        <?php if ($map) : ?>
+            <h2>Mapping</h2>
+            <table class="widefat striped" style="max-width:900px">
+                <thead><tr><th>Company</th><th>Divisions</th></tr></thead>
+                <tbody>
+                <?php foreach ($map as $company => $codes) : ?>
+                    <tr>
+                        <td><?= esc_html($company) ?></td>
+                        <td>
+                            <?php foreach ($codes as $code) : ?>
+                                <?php if (isset($divisions[$code])) : ?>
+                                    <div><code><?= esc_html($code) ?></code> <a href="<?= esc_url(get_edit_post_link($divisions[$code]->ID)) ?>"><?= esc_html($divisions[$code]->post_title) ?></a></div>
+                                <?php else : ?>
+                                    <div><code><?= esc_html($code) ?></code> <span style="color:#996800">no synced division with this code</span></div>
+                                <?php endif; ?>
+                            <?php endforeach; ?>
+                        </td>
+                    </tr>
+                <?php endforeach; ?>
+                </tbody>
+            </table>
+        <?php endif; ?>
+
+        <?php if ($unmapped) : ?>
+            <h2>Divisions not in the mapping (<?= count($unmapped) ?>)</h2>
+            <ul style="list-style:disc;margin-left:20px">
+                <?php foreach ($unmapped as $code => $division) : ?>
+                    <?php $companyId = (int) get_post_meta($division->ID, 'company', true); ?>
+                    <li><code><?= esc_html((string) $code) ?></code> <a href="<?= esc_url(get_edit_post_link($division->ID)) ?>"><?= esc_html($division->post_title) ?></a>
+                        — <?= $companyId ? esc_html(get_the_title($companyId)) . ' (set by hand)' : '<span style="color:#996800">no company</span>' ?></li>
+                <?php endforeach; ?>
+            </ul>
+        <?php endif; ?>
         <?php
     }
 
