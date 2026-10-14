@@ -43,6 +43,24 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
   - Nothing is deleted if Oracle can't be read or returns no rows.
 - **Companies are entered by hand.** Create them under **Companies**, then set each division's **Company** field. The sync never touches either.
 
+## Staff photos
+
+Oracle has no photos, so they come from a folder of files named `first_last_divcode.jpg` (e.g. `jane_citizen_jwh.jpg`). Set the folder in `wp-config.php`:
+
+```php
+define('INTRANET_PHONELIST_PHOTOS_DIR', '/path/to/staffPhotos');
+```
+
+- **When:** every sync (full or `--staff`) matches each current staff member to a file. It tries the preferred name first, then the first name, ignoring case, spaces and apostrophes.
+- **Where they go:** matched files are uploaded to the Media Library and set as the staff member's featured image.
+- **Re-syncs:** unchanged files are skipped, and a changed file replaces the photo.
+- **Leavers:** their photo is deleted with them.
+- **Folder rules:** only the top level of the folder is scanned (subfolders are ignored), and the folder itself is never modified.
+- **No folder:** if the constant isn't set, photos are skipped.
+- **Gaps:** **Settings → Phone List** lists staff without a photo. A photo set by hand in the editor is kept unless a matching file turns up.
+
+Locally the folder is `assets/staffPhotos/` (gitignored: never commit staff photos).
+
 ## Using it in a theme
 
 ```php
@@ -65,6 +83,7 @@ Both return `Staff` objects with these read-only properties:
 - `position`, `email`, `mobile`, `extension`
 - `divisionCode`, `division`, `company`
 - `tag` (department code), `tagDescription`
+- `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
 - `birthday`, `daysUntil` (from `birthdays()` only)
 
 DOB, home phone and other HR fields are never exposed.

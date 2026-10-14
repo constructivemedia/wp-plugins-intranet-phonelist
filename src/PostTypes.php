@@ -160,7 +160,7 @@ final class PostTypes
                 'public' => false,
                 'show_ui' => true,
                 'show_in_menu' => self::MENU,
-                'supports' => ['title'],
+                'supports' => $type === self::STAFF ? ['title', 'thumbnail'] : ['title'],
                 'map_meta_cap' => true,
                 'capabilities' => $type === self::COMPANY ? $adminOnly : $syncedOnly,
             ]);

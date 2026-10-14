@@ -44,5 +44,8 @@ define( 'INTRANET_PHONELIST_ORACLE_DSN', $env( 'INTRANET_PHONELIST_ORACLE_DSN', 
 define( 'INTRANET_PHONELIST_ORACLE_USER', $env( 'INTRANET_PHONELIST_ORACLE_USER', '' ) );
 define( 'INTRANET_PHONELIST_ORACLE_PASSWORD', $env( 'INTRANET_PHONELIST_ORACLE_PASSWORD', '' ) );
 
+// Intranet Phonelist: folder of staff photos named first_last_divcode.jpg (gitignored).
+define( 'INTRANET_PHONELIST_PHOTOS_DIR', $env( 'INTRANET_PHONELIST_PHOTOS_DIR', __DIR__ . '/assets/staffPhotos' ) );
+
 defined( 'ABSPATH' ) || define( 'ABSPATH', __DIR__ . '/wp/' );
 require_once ABSPATH . 'wp-settings.php';

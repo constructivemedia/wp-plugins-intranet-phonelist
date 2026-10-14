@@ -9,7 +9,7 @@ use wpdb;
  */
 final class Log
 {
-    public const ACTIONS = ['sync_start', 'created', 'updated', 'deleted', 'error', 'sync_end'];
+    public const ACTIONS = ['sync_start', 'created', 'updated', 'deleted', 'photo', 'error', 'sync_end'];
 
     private readonly string $table;
 

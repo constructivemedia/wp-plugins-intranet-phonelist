@@ -29,6 +29,7 @@ final class Synchronizer
 
     public function __construct(
         private readonly OracleSource $source,
+        private readonly Photos $photos,
         private readonly Log $log,
         private readonly wpdb $db,
     ) {
@@ -43,7 +44,7 @@ final class Synchronizer
         $full = $staffId === null;
         $this->runId = wp_generate_uuid4();
         $this->trigger = $trigger;
-        $this->counts = ['created' => 0, 'updated' => 0, 'deleted' => 0, 'errors' => 0];
+        $this->counts = ['created' => 0, 'updated' => 0, 'deleted' => 0, 'errors' => 0, 'photos' => 0, 'no_photo' => 0];
 
         if (!$this->lock()) {
             $this->record('error', message: 'A sync is already running.');
@@ -66,6 +67,10 @@ final class Synchronizer
                 $this->apply($type, $config, Planner::plan($rows[$type], $existing, $config['key']));
             }
 
+            if ($this->photos->enabled()) {
+                $this->attachPhotos($rows[PostTypes::STAFF]);
+            }
+
             $status = $this->counts['errors'] ? 'completed_with_errors' : 'completed';
         } catch (Throwable $e) {
             $this->counts['errors']++;
@@ -76,8 +81,11 @@ final class Synchronizer
             delete_option(self::LOCK);
         }
 
-        ['created' => $created, 'updated' => $updated, 'deleted' => $deleted, 'errors' => $errors] = $this->counts;
+        ['created' => $created, 'updated' => $updated, 'deleted' => $deleted, 'errors' => $errors, 'photos' => $photos, 'no_photo' => $noPhoto] = $this->counts;
         $message = trim("$message Created $created, updated $updated, deleted $deleted, errors $errors.");
+        if ($this->photos->enabled()) {
+            $message .= " Photos added $photos, no photo $noPhoto.";
+        }
         $this->record('sync_end', $full ? null : PostTypes::STAFF, $staffId, $status, $message);
         if ($full) {
             update_option(self::LAST_SYNC, ['time' => time(), 'trigger' => $trigger, 'status' => $status, 'message' => $message], false);
@@ -149,12 +157,43 @@ final class Synchronizer
 
         foreach ($plan['delete'] as $post) {
             $title = get_the_title($post['post_id']);
+            Photos::detach($post['post_id']); // Leavers' photos go too.
             if (wp_delete_post($post['post_id'], true)) {
                 $this->counts['deleted']++;
                 $this->record('deleted', $type, $post['source_id'], $title);
             } else {
                 $this->counts['errors']++;
                 $this->record('error', $type, $post['source_id'], $title, 'Delete failed.');
+            }
+        }
+    }
+
+    /**
+     * Photos run for every current staff member, not just changed ones: a photo can be added to the folder any time.
+     */
+    private function attachPhotos(array $rows): void
+    {
+        $posts = $this->existing(PostTypes::STAFF);
+        $title = PostTypes::synced()[PostTypes::STAFF]['title'];
+
+        foreach ($rows as $row) {
+            $id = $row['ID'];
+            if (!isset($posts[$id])) {
+                continue; // LEFT, or failed to save.
+            }
+            try {
+                $result = $this->photos->attach($posts[$id]['post_id'], $row);
+            } catch (Throwable $e) {
+                $this->counts['errors']++;
+                $this->record('error', PostTypes::STAFF, $id, $title($row), $e->getMessage());
+                continue;
+            }
+
+            if ($result === 'missing') {
+                $this->counts['no_photo']++;
+            } elseif ($result !== null) {
+                $this->counts['photos']++;
+                $this->record('photo', PostTypes::STAFF, $id, $title($row), $result);
             }
         }
     }

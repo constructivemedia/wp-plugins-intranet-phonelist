@@ -115,6 +115,7 @@ final class Phonelist
     {
         $meta = fn (string $key): string => (string) get_post_meta($post->ID, $key, true);
         $division = self::divisions()[$meta('div_code')] ?? ['name' => '', 'company' => ''];
+        $photoId = (int) get_post_thumbnail_id($post->ID);
 
         return new Staff(
             id: $meta('id'),
@@ -133,6 +134,8 @@ final class Phonelist
             tagDescription: trim($meta('tag_description')),
             birthday: $birthday,
             daysUntil: $daysUntil,
+            photoId: $photoId ?: null,
+            photoUrl: $photoId ? (wp_get_attachment_image_url($photoId, 'full') ?: null) : null,
         );
     }
 

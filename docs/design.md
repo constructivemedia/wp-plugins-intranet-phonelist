@@ -48,6 +48,15 @@ Symfony-style PHP (PSR-4 + PSR-12, constructor injection), with no Symfony depen
 - `division`: exact `DIV_CODE`.
 - `tag`: exact department code (`08` ≠ `8`).
 
+## Staff photos
+
+`Sync\Photos`: Oracle has no photos, so `INTRANET_PHONELIST_PHOTOS_DIR` points at a folder of `first_last_divcode.jpg` files (top level only).
+- **Matching:** each sync matches every current staff member, trying the preferred name, then the first word of the first name, then the full first name. Names are lowercased with spaces and apostrophes removed and hyphens kept.
+- **Upload:** matches are sideloaded into the Media Library as the featured image.
+- **Changes:** `_iphl_photo_source` (name|size|mtime) skips unchanged files, and a changed file replaces the photo. Leavers' photos are deleted with them.
+- **Future:** a photo field from Oracle would take priority, at the marked spot in `Photos::attach()`.
+- **Logging and API:** each photo is logged as a `photo` action, and the summary reports "Photos added N, no photo M". `Staff` exposes `photoId` and `photoUrl`.
+
 ## REST API
 
 `GET /wp-json/phonelist/v1/staff?name=&division=&tag=` is the same as `Phonelist::staff()`, returned as JSON (`src/Api/StaffController.php`). Access: **any logged-in user**, with no further capability checks. Intranet pages use their login cookie plus `X-WP-Nonce`; scripts and external systems use WordPress Application Passwords (HTTP Basic). Unauthenticated requests get `401`.

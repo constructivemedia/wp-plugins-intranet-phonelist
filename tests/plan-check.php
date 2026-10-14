@@ -8,6 +8,7 @@ require __DIR__ . '/../vendor/autoload.php';
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Staff;
+use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Planner;
 
 $row = fn ($id, $ext = '100', $name = 'A') => ['ID' => $id, 'PH_EXT' => $ext, 'FULL_NAME' => $name];
@@ -74,6 +75,18 @@ foreach ([
 ] as $raw => $pretty) {
     assert(PostTypes::prettyName($raw) === $pretty, "$raw → " . PostTypes::prettyName($raw));
 }
+
+// Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.
+$photoRow = fn (string $pref, string $first, string $last, string $div = 'JWH') => ['PREF_NAME' => $pref, 'NAME_FIRST' => $first, 'NAME_LAST_CO' => $last, 'DIV_CODE' => $div];
+assert(Photos::candidates($photoRow('Janey', 'Jane A', 'Citizen')) === ['janey_citizen_jwh', 'jane_citizen_jwh', 'janea_citizen_jwh']);
+assert(Photos::candidates($photoRow('', 'Jane', 'Citizen')) === ['jane_citizen_jwh']);
+assert(Photos::candidates($photoRow('Ann', 'Ann', "O'Shea-Smith"))[0] === 'ann_oshea-smith_jwh');
+assert(Photos::candidates($photoRow('Maria', 'Maria', 'Santos Lima', 'PHM'))[0] === 'maria_santoslima_phm');
+assert(Photos::fileKey('jane_citizen_jwh.jpg') === 'jane_citizen_jwh');
+assert(Photos::fileKey('Jane_Citizen_JWH.JPEG') === 'jane_citizen_jwh');
+assert(Photos::fileKey('jane_citizen_jwh.jpg.jpg') === 'jane_citizen_jwh');
+assert(Photos::fileKey('Jane Citizen_WACB.jpg') === 'jane_citizen_wacb');
+assert(Photos::fileKey('notes.txt') === null && Photos::fileKey('.jpg') === null);
 
 // Staff title: preferred name, else first name, then surname.
 $title = PostTypes::synced()[PostTypes::STAFF]['title'];

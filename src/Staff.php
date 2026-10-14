@@ -32,6 +32,10 @@ final class Staff implements JsonSerializable
         public readonly ?DateTimeImmutable $birthday = null,
         /** Days until $birthday, 0 = today. Set by Phonelist::birthdays(). */
         public readonly ?int $daysUntil = null,
+        /** Media Library attachment, e.g. wp_get_attachment_image($person->photoId, 'thumbnail'). Null without a photo. */
+        public readonly ?int $photoId = null,
+        /** Full-size photo URL. Null without a photo. */
+        public readonly ?string $photoUrl = null,
     ) {
     }
 

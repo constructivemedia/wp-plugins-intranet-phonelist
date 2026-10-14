@@ -49,6 +49,13 @@ final class SettingsPage
         $run = sanitize_text_field(wp_unslash($_GET['run'] ?? ''));
         $log = $this->log->page($paged, self::PER_PAGE, $action ?: null, $run ?: null);
         $unassigned = $this->unassignedDivisions();
+        $withoutPhoto = get_posts([
+            'post_type' => PostTypes::STAFF,
+            'numberposts' => -1,
+            'orderby' => 'title',
+            'order' => 'ASC',
+            'meta_query' => [['key' => '_thumbnail_id', 'compare' => 'NOT EXISTS']],
+        ]);
 
         $notices = [
             'synced' => ['success', 'Sync completed.'],
@@ -89,6 +96,17 @@ final class SettingsPage
                         <?php endforeach; ?>
                     </ul>
                 </div>
+            <?php endif; ?>
+
+            <?php if ($withoutPhoto) : ?>
+                <details class="notice notice-info inline" style="padding:8px 12px">
+                    <summary><strong><?= count($withoutPhoto) ?> staff have no photo</strong></summary>
+                    <ul style="list-style:disc;margin-left:20px;columns:3">
+                        <?php foreach ($withoutPhoto as $person) : ?>
+                            <li><a href="<?= esc_url(get_edit_post_link($person->ID)) ?>"><?= esc_html($person->post_title) ?></a> (<?= esc_html(get_post_meta($person->ID, 'div_code', true)) ?>)</li>
+                        <?php endforeach; ?>
+                    </ul>
+                </details>
             <?php endif; ?>
 
             <h2>Log</h2>

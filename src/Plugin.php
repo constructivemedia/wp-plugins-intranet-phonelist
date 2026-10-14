@@ -8,6 +8,7 @@ use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
 use ConstructiveMedia\IntranetPhonelist\Sync\Log;
 use ConstructiveMedia\IntranetPhonelist\Sync\OracleSource;
+use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
 
 /**
@@ -20,7 +21,7 @@ final class Plugin
         global $wpdb;
 
         $log = new Log($wpdb);
-        $synchronizer = new Synchronizer(OracleSource::fromConstants(), $log, $wpdb);
+        $synchronizer = new Synchronizer(OracleSource::fromConstants(), Photos::fromConstants(), $log, $wpdb);
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
