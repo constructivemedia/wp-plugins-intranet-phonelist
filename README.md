@@ -13,7 +13,7 @@ ddev start                 # builds Instant Client + oci8 (.ddev/web-build/Docke
 ddev composer install      # WordPress → wp/, plugins, and links this repo into wp/wp-content/plugins/
 ddev wp core install --url=https://wp-intranet-phonelist.ddev.site --title="Intranet Phonelist" \
   --admin_user=admin --admin_password=admin --admin_email=admin@example.com --skip-email
-ddev wp plugin activate advanced-custom-fields codepress-admin-columns intranet-phonelist
+ddev wp plugin activate advanced-custom-fields codepress-admin-columns wp-plugins-intranet-phonelist
 ```
 
 Create `.env` in the project root. It's gitignored, so never commit it. [wp-config.php](wp-config.php) reads it:
@@ -151,7 +151,7 @@ In the site's `composer.json`:
 
 The repository is private, so each site needs GitHub access: either a token (`composer config --global github-oauth.github.com <token>`), or an SSH key with `"url": "git@github.com:constructivemedia/wp-plugins-intranet-phonelist.git"`. Source installs (`--prefer-source`, a git clone) work the same as release zips.
 
-The package is named after the repository; releases before `v1.7.1` were published as `constructivemedia/intranet-phonelist`. The plugin installs to `wp-content/plugins/intranet-phonelist/` either way (`installer-name`), so WordPress sees the same plugin. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
+The package, and the folder it installs to (`wp-content/plugins/wp-plugins-intranet-phonelist/`), are named after the repository. Releases before `v1.7.1` were published as `constructivemedia/intranet-phonelist` and installed to `intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
 
 ## Releasing
 

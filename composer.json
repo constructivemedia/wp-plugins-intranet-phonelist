@@ -26,7 +26,6 @@
         }
     ],
     "extra": {
-        "installer-name": "intranet-phonelist",
         "wordpress-install-dir": "wp",
         "installer-paths": {
             "wp/wp-content/plugins/{$name}/": ["type:wordpress-plugin"]
@@ -39,7 +38,7 @@
         }
     },
     "scripts": {
-        "link-plugin": "[ -e wp/wp-content/plugins/intranet-phonelist ] || ln -s ../../.. wp/wp-content/plugins/intranet-phonelist",
+        "link-plugin": "[ -e wp/wp-content/plugins/wp-plugins-intranet-phonelist ] || ln -s ../../.. wp/wp-content/plugins/wp-plugins-intranet-phonelist",
         "post-install-cmd": "@link-plugin",
         "post-update-cmd": "@link-plugin"
     }
