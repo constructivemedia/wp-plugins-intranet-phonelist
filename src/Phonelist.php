@@ -4,6 +4,7 @@ namespace ConstructiveMedia\IntranetPhonelist;
 
 use DateTimeImmutable;
 use WP_Post;
+use WP_Query;
 
 /**
  * Public API for theme templates.
@@ -108,7 +109,10 @@ final class Phonelist
     private static function staffPosts(): array
     {
         // Loads every staff post (~430) per call; add a transient or a DOB index if it shows up in profiling.
-        return get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'post_status' => 'publish']);
+        $query = new WP_Query(['post_type' => PostTypes::STAFF, 'posts_per_page' => -1, 'post_status' => 'publish', 'no_found_rows' => true]);
+        update_post_thumbnail_cache($query); // Load every photo in one go rather than one query per person.
+
+        return $query->posts;
     }
 
     private static function toStaff(WP_Post $post, ?DateTimeImmutable $birthday = null, ?int $daysUntil = null): Staff

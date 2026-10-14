@@ -210,6 +210,7 @@ final class Synchronizer
     {
         $posts = $this->existing(PostTypes::STAFF);
         $title = PostTypes::synced()[PostTypes::STAFF]['title'];
+        update_meta_cache('post', array_column($posts, 'post_id')); // One query, not one per person.
 
         foreach ($rows as $row) {
             $id = $row['ID'];
@@ -286,7 +287,7 @@ final class Synchronizer
                 'code' => (string) get_post_meta($division->ID, PostTypes::SOURCE_ID, true),
                 'label' => $division->post_title,
             ], $divisions);
-            $this->record('warning', 'no_company', PostTypes::DIVISION, label: count($items) . ' divisions', message: count($items) . ' division(s) have no company.', context: ['items' => $items]);
+            $this->record('warning', 'no_company', message: count($items) . ' division(s) have no company.', context: ['items' => $items]);
         }
     }
 

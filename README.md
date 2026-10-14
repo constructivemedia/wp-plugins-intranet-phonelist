@@ -6,8 +6,6 @@ A WordPress plugin that mirrors staff and divisions from JWH's Oracle database i
 - Requires PHP 8.1+, Advanced Custom Fields, and the `oci8` extension with Oracle Instant Client. Admin Columns is optional.
 - Oracle access is read-only: the plugin only ever runs `SELECT` on those two tables.
 
-Design and decisions: [docs/design.md](docs/design.md).
-
 ## Local setup (DDEV)
 
 ```bash
@@ -120,8 +118,9 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 | `src/Plugin.php` | Wires everything together; the only place objects are built |
 | `src/PostTypes.php` | Post types, the Oracle column mapping, ACF fields |
 | `src/Phonelist.php`, `src/Staff.php` | Public theme API and the value object it returns |
-| `src/Sync/` | `OracleSource` (SELECTs), `Planner` (pure diff), `Synchronizer` (runs a sync), `Log` (audit table) |
-| `src/Admin/SettingsPage.php`, `src/Cli/SyncCommand.php`, `src/Api/StaffController.php` | Settings page, WP-CLI command, REST route |
+| `src/Sync/` | `OracleSource` (SELECTs), `Planner` (pure diff and log payloads), `Synchronizer` (runs a sync), `Photos` (photo folder → Media Library), `Log` (audit table, self-upgrading) |
+| `src/Admin/` | `SettingsPage` (Sync, Logs and Photos tabs), `Relationships` (boxes on the edit screens) |
+| `src/Cli/SyncCommand.php`, `src/Api/StaffController.php` | WP-CLI command, REST route |
 
 Tests: `ddev exec php -d zend.assertions=1 tests/plan-check.php`
 
@@ -149,7 +148,7 @@ Composer reads versions from **git tags**, so `composer.json` has no `version` f
 1. Bump `Version:` in `intranet-phonelist.php`.
 2. Commit, then tag with the same number and push: `git tag v1.1.2 && git push origin v1.1.2`.
 
-A constraint like `^1.1.2` then picks up `v1.1.2` and anything later below 2.0. Release archives leave out `.ddev/`, `docs/`, `tests/` and the dev `wp-config.php` (see `.gitattributes`).
+A constraint like `^1.1.2` then picks up `v1.1.2` and anything later below 2.0, so sites get new releases with `composer update`. No reactivation is needed: the log table upgrades itself on load. Release archives leave out `.ddev/`, `tests/` and the dev `wp-config.php` (see `.gitattributes`).
 
 ## Deploying
 

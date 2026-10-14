@@ -71,7 +71,13 @@ final class Relationships
         $rows = [];
         $total = 0;
         foreach ($divisions as $division) {
-            $count = count($this->staffWhere('div_code', $this->meta($division, PostTypes::SOURCE_ID)));
+            $count = count(get_posts([
+                'post_type' => PostTypes::STAFF,
+                'numberposts' => -1,
+                'fields' => 'ids', // Counting only.
+                'meta_key' => 'div_code',
+                'meta_value' => $this->meta($division, PostTypes::SOURCE_ID),
+            ]));
             $total += $count;
             $rows[] = [$this->link($division), '<code>' . esc_html($this->meta($division, PostTypes::SOURCE_ID)) . '</code>', $count];
         }
