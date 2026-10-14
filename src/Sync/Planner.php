@@ -75,6 +75,44 @@ final class Planner
     }
 
     /**
+     * Date columns that had a value in Oracle but couldn't be read (so were stored empty). 'N/A' means empty on purpose.
+     *
+     * @return string[] Column names.
+     */
+    public static function unreadableDates(array $raw, array $normalized, array $dates): array
+    {
+        return array_values(array_filter(
+            array_keys($dates),
+            fn (string $column): bool => !in_array(strtoupper(trim($raw[$column])), ['', 'N/A'], true) && $normalized[$column] === '',
+        ));
+    }
+
+    /**
+     * Fields that differ between two rows, for the log. Private columns record only that they changed, never the values.
+     *
+     * @return array<string, array{from: string, to: string}|string> Column => from/to, or '(changed)'.
+     */
+    public static function changes(array $old, array $new): array
+    {
+        $changes = [];
+        foreach ($new as $column => $value) {
+            if ((string) ($old[$column] ?? '') !== (string) $value) {
+                $changes[$column] = in_array($column, PostTypes::PRIVATE_COLUMNS, true) ? '(changed)' : ['from' => (string) ($old[$column] ?? ''), 'to' => (string) $value];
+            }
+        }
+
+        return $changes;
+    }
+
+    /**
+     * A row for the log, with private columns removed.
+     */
+    public static function redact(array $row): array
+    {
+        return array_diff_key($row, array_flip(PostTypes::PRIVATE_COLUMNS));
+    }
+
+    /**
      * Fingerprint of a source row, independent of column order.
      */
     public static function hash(array $row): string

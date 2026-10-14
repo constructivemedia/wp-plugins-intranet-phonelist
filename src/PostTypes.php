@@ -18,6 +18,9 @@ final class PostTypes
     public const DIVISION = self::PREFIX . 'division';
     public const STAFF = self::PREFIX . 'staff';
 
+    /** HR fields kept out of the log: it records that they changed, never their values. */
+    public const PRIVATE_COLUMNS = ['DOB', 'HOME_PHONE'];
+
     /** Post meta on synced posts: the Oracle key, and the fingerprint of the last synced row. */
     public const SOURCE_ID = '_' . self::PREFIX . 'source_id';
     public const SOURCE_HASH = '_' . self::PREFIX . 'source_hash';

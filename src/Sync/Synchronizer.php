@@ -47,11 +47,11 @@ final class Synchronizer
         $this->counts = ['created' => 0, 'updated' => 0, 'deleted' => 0, 'errors' => 0, 'photos' => 0, 'no_photo' => 0];
 
         if (!$this->lock()) {
-            $this->record('error', message: 'A sync is already running.');
+            $this->record('error', 'error', message: 'A sync is already running.');
             return ['status' => 'failed', 'counts' => $this->counts, 'message' => 'A sync is already running.'];
         }
 
-        $this->record('sync_start', $full ? null : PostTypes::STAFF, $staffId, $full ? 'full' : 'single');
+        $this->record('info', 'sync_start', $full ? null : PostTypes::STAFF, $staffId, $full ? 'full' : 'single');
         $message = '';
 
         try {
@@ -64,11 +64,16 @@ final class Synchronizer
                     // Only this person is in scope, so only they can be deleted.
                     $existing = array_filter($existing, fn (array $post): bool => $post['source_id'] === $staffId);
                 }
-                $this->apply($type, $config, Planner::plan($rows[$type], $existing, $config['key']));
+                $plan = Planner::plan($rows[$type], $existing, $config['key']);
+                $this->debug('plan', $type, ['create' => count($plan['create']), 'update' => count($plan['update']), 'delete' => count($plan['delete'])]);
+                $this->apply($type, $config, $plan);
             }
 
             if ($this->photos->enabled()) {
                 $this->attachPhotos($rows[PostTypes::STAFF]);
+            }
+            if ($full) {
+                $this->warnUnassignedDivisions();
             }
 
             $status = $this->counts['errors'] ? 'completed_with_errors' : 'completed';
@@ -76,7 +81,7 @@ final class Synchronizer
             $this->counts['errors']++;
             $status = 'failed';
             $message = $e->getMessage();
-            $this->record('error', message: $message);
+            $this->record('error', 'error', message: $message);
         } finally {
             delete_option(self::LOCK);
         }
@@ -86,9 +91,10 @@ final class Synchronizer
         if ($this->photos->enabled()) {
             $message .= " Photos added $photos, no photo $noPhoto.";
         }
-        $this->record('sync_end', $full ? null : PostTypes::STAFF, $staffId, $status, $message);
+        $level = ['completed' => 'info', 'completed_with_errors' => 'warning', 'failed' => 'error'][$status];
+        $this->record($level, 'sync_end', $full ? null : PostTypes::STAFF, $staffId, $status, $message, $this->counts);
         if ($full) {
-            update_option(self::LAST_SYNC, ['time' => time(), 'trigger' => $trigger, 'status' => $status, 'message' => $message], false);
+            update_option(self::LAST_SYNC, ['time' => time(), 'trigger' => $trigger, 'status' => $status, 'message' => $message, 'run' => $this->runId], false);
         }
 
         return ['status' => $status, 'counts' => $this->counts, 'message' => $message];
@@ -100,18 +106,34 @@ final class Synchronizer
     private function fetchAll(array $types, bool $full, ?string $staffId): array
     {
         $rows = [];
+        $unreadable = [];
         $today = new DateTimeImmutable('today', wp_timezone());
-        foreach ($types as $type => $config) {
-            $rows[$type] = array_map(
-                fn (array $row): array => Planner::normalize($row, $config['dates'], $today),
-                $full
-                    ? $this->source->fetch($config['table'], $config['columns'])
-                    : $this->source->fetch($config['table'], $config['columns'], $config['key'], $staffId),
-            );
 
-            if ($full && !$rows[$type]) {
+        foreach ($types as $type => $config) {
+            $started = microtime(true);
+            $raw = $full
+                ? $this->source->fetch($config['table'], $config['columns'])
+                : $this->source->fetch($config['table'], $config['columns'], $config['key'], $staffId);
+            $this->debug('fetch', $type, ['table' => $config['table'], 'rows' => count($raw), 'ms' => (int) ((microtime(true) - $started) * 1000)]);
+
+            if ($full && !$raw) {
                 throw new RuntimeException("{$config['table']} returned no rows; aborting so nothing is deleted.");
             }
+
+            $rows[$type] = [];
+            foreach ($raw as $row) {
+                $normalized = Planner::normalize($row, $config['dates'], $today);
+                foreach (Planner::unreadableDates($row, $normalized, $config['dates']) as $column) {
+                    // Private columns (DOB) never have their value logged.
+                    $value = in_array($column, PostTypes::PRIVATE_COLUMNS, true) ? '(hidden)' : $row[$column];
+                    $unreadable[] = ['code' => $row[$config['key']], 'label' => $config['title']($row), 'field' => $column, 'value' => $value];
+                }
+                $rows[$type][] = $normalized;
+            }
+        }
+
+        if ($unreadable) {
+            $this->record('warning', 'bad_date', message: count($unreadable) . ' date(s) in Oracle could not be read and were stored empty.', context: ['items' => $unreadable]);
         }
 
         if ($full) {
@@ -130,6 +152,7 @@ final class Synchronizer
             foreach ($plan[$operation] as $item) {
                 $id = $item['row'][$config['key']];
                 $title = $config['title']($item['row']);
+                $before = $operation === 'update' ? $this->storedRow($item['post_id'], $config['columns']) : [];
                 $post = [
                     'post_type' => $type,
                     'post_status' => 'publish',
@@ -142,28 +165,34 @@ final class Synchronizer
 
                 if (is_wp_error($postId)) {
                     $this->counts['errors']++;
-                    $this->record('error', $type, $id, $title, $postId->get_error_message());
+                    $this->record('error', 'error', $type, $id, $title, $postId->get_error_message());
                     continue;
                 }
                 foreach ($config['columns'] as $column) {
                     update_field(PostTypes::fieldKey($type, $column), $item['row'][$column], $postId);
                 }
 
-                $action = $operation === 'create' ? 'created' : 'updated';
-                $this->counts[$action]++;
-                $this->record($action, $type, $id, $title);
+                if ($operation === 'create') {
+                    $this->counts['created']++;
+                    $this->record('info', 'created', $type, $id, $title, context: ['fields' => Planner::redact($item['row'])]);
+                } else {
+                    $changes = Planner::changes($before, $item['row']);
+                    $this->counts['updated']++;
+                    $this->record('info', 'updated', $type, $id, $title, implode(', ', array_keys($changes)), ['changes' => $changes]);
+                }
             }
         }
 
         foreach ($plan['delete'] as $post) {
             $title = get_the_title($post['post_id']);
+            $context = ['division' => (string) get_post_meta($post['post_id'], 'div_code', true)];
             Photos::detach($post['post_id']); // Leavers' photos go too.
             if (wp_delete_post($post['post_id'], true)) {
                 $this->counts['deleted']++;
-                $this->record('deleted', $type, $post['source_id'], $title);
+                $this->record('notice', 'deleted', $type, $post['source_id'], $title, context: $context);
             } else {
                 $this->counts['errors']++;
-                $this->record('error', $type, $post['source_id'], $title, 'Delete failed.');
+                $this->record('error', 'error', $type, $post['source_id'], $title, 'Delete failed.');
             }
         }
     }
@@ -175,6 +204,7 @@ final class Synchronizer
     {
         $posts = $this->existing(PostTypes::STAFF);
         $title = PostTypes::synced()[PostTypes::STAFF]['title'];
+        $missing = [];
 
         foreach ($rows as $row) {
             $id = $row['ID'];
@@ -185,17 +215,52 @@ final class Synchronizer
                 $result = $this->photos->attach($posts[$id]['post_id'], $row);
             } catch (Throwable $e) {
                 $this->counts['errors']++;
-                $this->record('error', PostTypes::STAFF, $id, $title($row), $e->getMessage());
+                $this->record('error', 'error', PostTypes::STAFF, $id, $title($row), $e->getMessage());
                 continue;
             }
 
             if ($result === 'missing') {
                 $this->counts['no_photo']++;
+                $missing[] = ['postId' => $posts[$id]['post_id'], 'code' => $row['DIV_CODE'], 'label' => $title($row), 'tried' => Photos::candidates($row)];
             } elseif ($result !== null) {
                 $this->counts['photos']++;
-                $this->record('photo', PostTypes::STAFF, $id, $title($row), $result);
+                $this->record('info', 'photo', PostTypes::STAFF, $id, $title($row), $result, ['file' => get_post_meta($posts[$id]['post_id'], Photos::SOURCE, true)]);
             }
         }
+
+        if ($missing) {
+            $this->record('warning', 'no_photo', PostTypes::STAFF, label: count($missing) . ' staff', message: count($missing) . ' staff have no photo.', context: ['items' => $missing]);
+        }
+    }
+
+    private function warnUnassignedDivisions(): void
+    {
+        $divisions = get_posts([
+            'post_type' => PostTypes::DIVISION,
+            'numberposts' => -1,
+            'orderby' => 'title',
+            'order' => 'ASC',
+            'meta_query' => ['relation' => 'OR', ['key' => 'company', 'compare' => 'NOT EXISTS'], ['key' => 'company', 'value' => '']],
+        ]);
+
+        if ($divisions) {
+            $items = array_map(fn ($division): array => [
+                'postId' => $division->ID,
+                'code' => (string) get_post_meta($division->ID, PostTypes::SOURCE_ID, true),
+                'label' => $division->post_title,
+            ], $divisions);
+            $this->record('warning', 'no_company', PostTypes::DIVISION, label: count($items) . ' divisions', message: count($items) . ' division(s) have no company.', context: ['items' => $items]);
+        }
+    }
+
+    /**
+     * A post's currently stored synced values, keyed by Oracle column, for diffing.
+     */
+    private function storedRow(int $postId, array $columns): array
+    {
+        $meta = get_post_meta($postId);
+
+        return array_combine($columns, array_map(fn (string $column): string => (string) ($meta[strtolower($column)][0] ?? ''), $columns));
     }
 
     /**
@@ -235,8 +300,25 @@ final class Synchronizer
         return add_option(self::LOCK, time(), '', false);
     }
 
-    private function record(string $action, ?string $postType = null, ?string $sourceId = null, string $label = '', ?string $message = null): void
+    /**
+     * Debug entries are only written when WP_DEBUG is on.
+     */
+    private function debug(string $action, string $postType, array $context): void
     {
-        $this->log->write($this->runId, $this->trigger, $action, $postType, $sourceId, $label, $message);
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            $this->record('debug', $action, $postType, context: $context);
+        }
+    }
+
+    private function record(
+        string $level,
+        string $action,
+        ?string $postType = null,
+        ?string $sourceId = null,
+        string $label = '',
+        ?string $message = null,
+        ?array $context = null,
+    ): void {
+        $this->log->write($this->runId, $this->trigger, $level, $action, $postType, $sourceId, $label, $message, $context);
     }
 }

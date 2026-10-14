@@ -21,6 +21,7 @@ final class Plugin
         global $wpdb;
 
         $log = new Log($wpdb);
+        $log->maybeUpgrade();
         $synchronizer = new Synchronizer(OracleSource::fromConstants(), Photos::fromConstants(), $log, $wpdb);
         $postTypes = new PostTypes();
 

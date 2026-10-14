@@ -76,6 +76,15 @@ foreach ([
     assert(PostTypes::prettyName($raw) === $pretty, "$raw → " . PostTypes::prettyName($raw));
 }
 
+// Log payloads: field-level changes, and HR fields never logged by value.
+$changes = Planner::changes(['POSITION' => 'Estimator', 'DOB' => '19850905', 'EMAIL' => 'a@x'], ['POSITION' => 'Senior Estimator', 'DOB' => '19850906', 'EMAIL' => 'a@x']);
+assert($changes === ['POSITION' => ['from' => 'Estimator', 'to' => 'Senior Estimator'], 'DOB' => '(changed)']);
+assert(!str_contains(json_encode($changes), '1985'));
+assert(Planner::redact(['ID' => '1', 'DOB' => '19850905', 'HOME_PHONE' => '9999', 'EMAIL' => 'a@x']) === ['ID' => '1', 'EMAIL' => 'a@x']);
+$raw = ['DOB' => '31Feb85', 'START_DATE' => 'N/A', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '05Sep85'];
+$normalized = ['DOB' => '', 'START_DATE' => '', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '19850905'];
+assert(Planner::unreadableDates($raw, $normalized, array_fill_keys(array_keys($raw), PostTypes::DATE)) === ['DOB']); // 'N/A' and '' are empty on purpose
+
 // Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.
 $photoRow = fn (string $pref, string $first, string $last, string $div = 'JWH') => ['PREF_NAME' => $pref, 'NAME_FIRST' => $first, 'NAME_LAST_CO' => $last, 'DIV_CODE' => $div];
 assert(Photos::candidates($photoRow('Janey', 'Jane A', 'Citizen')) === ['janey_citizen_jwh', 'jane_citizen_jwh', 'janea_citizen_jwh']);

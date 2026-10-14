@@ -89,22 +89,31 @@ The hash covers the Oracle row only, so changing how titles are built won't touc
 | `run_id` | char(36) — UUID per run |
 | `created_at` | datetime (UTC) |
 | `triggered_by` | varchar(10) — `cli`/`button` (`trigger` is a MySQL reserved word) |
-| `action` | varchar(20) — `sync_start`, `created`, `updated`, `deleted`, `error`, `sync_end` |
+| `level` | varchar(10) — `error`, `warning`, `notice`, `info`, `debug` |
+| `action` | varchar(20) — `sync_start`, `created`, `updated`, `deleted`, `photo`, `no_photo`, `no_company`, `bad_date`, `fetch`, `plan`, `error`, `sync_end` |
 | `post_type` | varchar(20), nullable |
 | `source_id` | varchar(64), nullable |
 | `label` | varchar(255) — person/division name |
 | `message` | text, nullable |
+| `context` | longtext JSON, nullable — the payload |
 
-Indexes: `run_id`, `created_at`, `action`.
+Indexes: `run_id`, `created_at`, `level`, `action`. The schema is versioned (`intranet_phonelist_log_schema`); `Log::maybeUpgrade()` runs `dbDelta` on load when it changes.
+
+**Levels and payloads:**
+- `error`: failures.
+- `warning`: one summary entry per sync for staff with no photo, divisions with no company, and dates that couldn't be read. The payload lists the affected `items`.
+- `notice`: deletions, with the last division in the payload.
+- `info`: start/end, created (payload: the fields), updated (payload: `changes`, field → from/to), photo (payload: the source file).
+- `debug`: `fetch` (rows, ms) and `plan` (counts), only when `WP_DEBUG` is on.
+
+`PostTypes::PRIVATE_COLUMNS` (`DOB`, `HOME_PHONE`) are never logged by value; changes to them are recorded as "(changed)".
 
 ## Entry points
 
 - **WP-CLI**: `wp phonelist sync`, for the nightly cron, e.g. `0 2 * * * cd /path && wp phonelist sync`. Exits non-zero on error. `wp phonelist sync --staff=<id>` syncs one person only.
-- **Settings → Phone List** (`manage_options`):
-  - Last sync summary.
-  - **Sync Now** button (`admin-post.php`, nonce; runs synchronously).
-  - The log, as a paginated `widefat` table (100 rows per page, `paginate_links`) filterable by action and run.
-  - **Delete all logs**, and **Delete logs older than N days** (nonce + JS confirm).
+- **Settings → Phonelist** (`manage_options`), in two tabs:
+  - **Sync:** last sync summary, error/warning counts for that run (linking to the filtered log), and **Sync Now** (`admin-post.php`, nonce; runs synchronously).
+  - **Logs:** a paginated `widefat` table (100 rows per page) filterable by level, action and run. Each entry's payload expands in a Details toggle: changes as a from/to table, item lists as links, the rest as JSON. **Delete all logs**, and **Delete logs older than N days** (nonce + JS confirm).
 
 ## Error handling
 
