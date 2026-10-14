@@ -30,6 +30,11 @@ final class Photos
         return $this->dir !== '' && is_dir($this->dir);
     }
 
+    public function directory(): string
+    {
+        return $this->dir;
+    }
+
     /**
      * Give a staff post its photo. Returns 'added', 'replaced', 'missing' (no photo at all), or null (nothing to do).
      *

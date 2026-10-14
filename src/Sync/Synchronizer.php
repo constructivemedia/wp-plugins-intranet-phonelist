@@ -26,6 +26,8 @@ final class Synchronizer
     private string $trigger = '';
     /** @var array<string, int> */
     private array $counts = [];
+    /** @var array<string, array<string, array>> Type => key => the row exactly as oci8 returned it, for the log. */
+    private array $raw = [];
 
     public function __construct(
         private readonly OracleSource $source,
@@ -121,6 +123,7 @@ final class Synchronizer
             }
 
             $rows[$type] = [];
+            $this->raw[$type] = array_column($raw, null, $config['key']);
             foreach ($raw as $row) {
                 $normalized = Planner::normalize($row, $config['dates'], $today);
                 foreach (Planner::unreadableDates($row, $normalized, $config['dates']) as $column) {
@@ -172,13 +175,14 @@ final class Synchronizer
                     update_field(PostTypes::fieldKey($type, $column), $item['row'][$column], $postId);
                 }
 
+                $oracleRow = Planner::redact($this->raw[$type][$id] ?? []);
                 if ($operation === 'create') {
                     $this->counts['created']++;
-                    $this->record('info', 'created', $type, $id, $title, context: ['fields' => Planner::redact($item['row'])]);
+                    $this->record('info', 'created', $type, $id, $title, context: ['oracle' => $oracleRow]);
                 } else {
                     $changes = Planner::changes($before, $item['row']);
                     $this->counts['updated']++;
-                    $this->record('info', 'updated', $type, $id, $title, implode(', ', array_keys($changes)), ['changes' => $changes]);
+                    $this->record('info', 'updated', $type, $id, $title, implode(', ', array_keys($changes)), ['changes' => $changes, 'oracle' => $oracleRow]);
                 }
             }
         }
@@ -204,7 +208,6 @@ final class Synchronizer
     {
         $posts = $this->existing(PostTypes::STAFF);
         $title = PostTypes::synced()[PostTypes::STAFF]['title'];
-        $missing = [];
 
         foreach ($rows as $row) {
             $id = $row['ID'];
@@ -219,17 +222,13 @@ final class Synchronizer
                 continue;
             }
 
+            // Staff without a photo are listed live on the Photos tab rather than logged every sync.
             if ($result === 'missing') {
                 $this->counts['no_photo']++;
-                $missing[] = ['postId' => $posts[$id]['post_id'], 'code' => $row['DIV_CODE'], 'label' => $title($row), 'tried' => Photos::candidates($row)];
             } elseif ($result !== null) {
                 $this->counts['photos']++;
                 $this->record('info', 'photo', PostTypes::STAFF, $id, $title($row), $result, ['file' => get_post_meta($posts[$id]['post_id'], Photos::SOURCE, true)]);
             }
-        }
-
-        if ($missing) {
-            $this->record('warning', 'no_photo', PostTypes::STAFF, label: count($missing) . ' staff', message: count($missing) . ' staff have no photo.', context: ['items' => $missing]);
         }
     }
 

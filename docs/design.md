@@ -63,7 +63,7 @@ Symfony-style PHP (PSR-4 + PSR-12, constructor injection), with no Symfony depen
 
 ## Column maps
 
-One array per post type (`ORACLE_COLUMN => acf_field_name`, lowercased). Post title (an admin label only; displays use the fields): staff = `PREF_NAME` (or `NAME_FIRST` if blank) + `NAME_LAST_CO`; division = `PostTypes::prettyName(DIV_NAME)` (title case and tidy brackets, keeping the acronyms `JWH`, `IT`, `GSH` and `W.A.`; e.g. `ACTIVE PLUMBING - METRO` → `Active Plumbing - Metro`). `Staff::$division` uses that title. Admin: a **Phonelist** menu (opens Staff) holds Companies, Divisions and Staff; editor fields are grouped into tabs (`fields` layout in `PostTypes::synced()`); each edit screen has a read-only **Relationships** box (`AdminRelationships`): staff show their division, company, reports-to (`REPORTS_TO_ID` is the manager's `POSITION_NO`) and direct reports; divisions show their company and staff; companies show their divisions with staff counts. Values are stored raw; formatting is the display's job.
+One array per post type (`ORACLE_COLUMN => acf_field_name`, lowercased). Post title (an admin label only; displays use the fields): staff = `PREF_NAME` (or `NAME_FIRST` if blank) + `NAME_LAST_CO`; division = `PostTypes::prettyName(DIV_NAME)` (title case and tidy brackets, keeping the acronyms `JWH`, `IT`, `GSH` and `W.A.`; e.g. `ACTIVE PLUMBING - METRO` → `Active Plumbing - Metro`). `Staff::$division` uses that title. Admin: a **Phonelist** menu (opens Staff) holds Companies, Divisions and Staff; editor fields are grouped into tabs (`fields` layout in `PostTypes::synced()`); each edit screen has a read-only **Relationships** box (`Admin\Relationships`): staff show their division, company, reports-to (`REPORTS_TO_ID` is the manager's `POSITION_NO`) and direct reports; divisions show their company and staff; companies show their divisions with staff counts. Values are stored raw; formatting is the display's job.
 
 - **Division** (`DIVISIONS`): `DIV_CODE`, `DIV_NAME`, `DIV_ADDR1`, `DIV_ADDR2`, `DIV_PCODE`, `POSTAL_ADDRESS`, `PHONE`, `FAX`, `DX_NO`.
 - **Staff** (`PHONE_LIST_INTRANET`): `ID`, `NAME_LAST_CO`, `NAME_FIRST`, `FULL_NAME`, `PREF_NAME`, `DOB`, `START_DATE`, `DIV_CODE`, `EMAIL`, `MOBILE_NO`, `PH_EXT`, `POSITION`, `HOME_PHONE`, `AWARD_CODE`, `POSITION_NO`, `POSITION_ABBR`, `USERNAME`, `E_STATUS`, `JOB`, `ON_LEAVE`, `JOB_TYPE`, `COMPANY_ID`, `VOIP`, `REPORTS_TO_ID`, `INDUCTION_COMPLETE_DATE`, `HIDE_BIRTHDAY`, `TAG`, `TAG_DESCRIPTION`.
@@ -90,7 +90,7 @@ The hash covers the Oracle row only, so changing how titles are built won't touc
 | `created_at` | datetime (UTC) |
 | `triggered_by` | varchar(10) — `cli`/`button` (`trigger` is a MySQL reserved word) |
 | `level` | varchar(10) — `error`, `warning`, `notice`, `info`, `debug` |
-| `action` | varchar(20) — `sync_start`, `created`, `updated`, `deleted`, `photo`, `no_photo`, `no_company`, `bad_date`, `fetch`, `plan`, `error`, `sync_end` |
+| `action` | varchar(20) — `sync_start`, `created`, `updated`, `deleted`, `photo`, `no_company`, `bad_date`, `fetch`, `plan`, `error`, `sync_end` |
 | `post_type` | varchar(20), nullable |
 | `source_id` | varchar(64), nullable |
 | `label` | varchar(255) — person/division name |
@@ -101,9 +101,9 @@ Indexes: `run_id`, `created_at`, `level`, `action`. The schema is versioned (`in
 
 **Levels and payloads:**
 - `error`: failures.
-- `warning`: one summary entry per sync for staff with no photo, divisions with no company, and dates that couldn't be read. The payload lists the affected `items`.
+- `warning`: one summary entry per sync for divisions with no company and for dates that couldn't be read. The payload lists the affected `items`. (Staff without a photo are shown live on the Photos tab instead.)
 - `notice`: deletions, with the last division in the payload.
-- `info`: start/end, created (payload: the fields), updated (payload: `changes`, field → from/to), photo (payload: the source file).
+- `info`: start/end, created (payload: `oracle`, the row as oci8 returned it), updated (payload: `changes`, field → from/to, plus `oracle`), photo (payload: the source file).
 - `debug`: `fetch` (rows, ms) and `plan` (counts), only when `WP_DEBUG` is on.
 
 `PostTypes::PRIVATE_COLUMNS` (`DOB`, `HOME_PHONE`) are never logged by value; changes to them are recorded as "(changed)".
@@ -111,9 +111,10 @@ Indexes: `run_id`, `created_at`, `level`, `action`. The schema is versioned (`in
 ## Entry points
 
 - **WP-CLI**: `wp phonelist sync`, for the nightly cron, e.g. `0 2 * * * cd /path && wp phonelist sync`. Exits non-zero on error. `wp phonelist sync --staff=<id>` syncs one person only.
-- **Settings → Phonelist** (`manage_options`), in two tabs:
+- **Settings → Phonelist** (`manage_options`), in three tabs:
   - **Sync:** last sync summary, error/warning counts for that run (linking to the filtered log), and **Sync Now** (`admin-post.php`, nonce; runs synchronously).
-  - **Logs:** a paginated `widefat` table (100 rows per page) filterable by level, action and run. Each entry's payload expands in a Details toggle: changes as a from/to table, item lists as links, the rest as JSON. **Delete all logs**, and **Delete logs older than N days** (nonce + JS confirm).
+  - **Logs:** a paginated table (100 rows per page) with a Run dropdown plus level and action filters. **View** opens a full-width row under the entry with its payload as formatted JSON. **Delete all logs**, and **Delete logs older than N days** (nonce + JS confirm).
+  - **Photos:** live count of staff with a photo, and a table of those without one, with the file names looked for (`Photos::candidates()`).
 
 ## Error handling
 

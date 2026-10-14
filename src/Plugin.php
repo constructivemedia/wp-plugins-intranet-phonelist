@@ -22,7 +22,8 @@ final class Plugin
 
         $log = new Log($wpdb);
         $log->maybeUpgrade();
-        $synchronizer = new Synchronizer(OracleSource::fromConstants(), Photos::fromConstants(), $log, $wpdb);
+        $photos = Photos::fromConstants();
+        $synchronizer = new Synchronizer(OracleSource::fromConstants(), $photos, $log, $wpdb);
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
@@ -32,7 +33,7 @@ final class Plugin
         register_activation_hook($pluginFile, [$log, 'install']);
 
         if (is_admin()) {
-            (new SettingsPage($synchronizer, $log))->register();
+            (new SettingsPage($synchronizer, $photos, $log))->register();
             (new Relationships())->register();
         }
         if (defined('WP_CLI') && WP_CLI) {

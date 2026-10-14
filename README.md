@@ -36,16 +36,17 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
 ```
 
 - **Nightly cron**: `0 2 * * * wp phonelist sync --path=/path/to/wordpress`. The command exits non-zero unless the run is fully clean.
-- **Settings → Phonelist** has two tabs:
+- **Settings → Phonelist** has three tabs:
   - **Sync:** the last result, any errors or warnings from it, and **Sync Now**.
-  - **Logs:** the audit log, filterable by level, action and run.
+  - **Logs:** the audit log, filterable by run, level and action.
+  - **Photos:** how many staff have a photo, and who doesn't, with the file names looked for.
 - **Log levels:**
   - `error`: failures.
-  - `warning`: staff without a photo, divisions without a company, dates Oracle sent that couldn't be read.
+  - `warning`: divisions without a company, dates Oracle sent that couldn't be read.
   - `notice`: deletions.
   - `info`: everything else.
   - `debug`: row counts and timings, written only with `WP_DEBUG`.
-- **Log details:** expand any entry for its details. Updates show each changed field from → to. DOB and home phone are only ever recorded as "(changed)", never their values.
+- **Log details:** **View** on any entry shows its payload as formatted JSON in a row underneath. Created and updated entries include the row as Oracle sent it, and updates also list each changed field from → to. DOB and home phone are never stored: changes to them are recorded as "(changed)" only.
 - **What gets synced**:
   - Divisions are synced only while at least one current staff member belongs to them.
   - IDs are matched as exact strings, so `00001` ≠ `1`.
@@ -66,7 +67,7 @@ define('INTRANET_PHONELIST_PHOTOS_DIR', '/path/to/staffPhotos');
 - **Leavers:** their photo is deleted with them.
 - **Folder rules:** only the top level of the folder is scanned (subfolders are ignored), and the folder itself is never modified.
 - **No folder:** if the constant isn't set, photos are skipped.
-- **Gaps:** each sync logs one `no_photo` warning listing the staff without a photo (**Settings → Phonelist → Logs**). A photo set by hand in the editor is kept unless a matching file turns up.
+- **Gaps:** **Settings → Phonelist → Photos** lists staff without a photo and the file names it looked for. A photo set by hand in the editor is kept unless a matching file turns up.
 
 Locally the folder is `assets/staffPhotos/` (gitignored: never commit staff photos).
 

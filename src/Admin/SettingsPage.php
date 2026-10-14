@@ -2,20 +2,25 @@
 
 namespace ConstructiveMedia\IntranetPhonelist\Admin;
 
+use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Sync\Log;
+use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
 
 /**
- * Settings → Phonelist, in two tabs: Sync (last result, Sync Now) and Logs (filterable audit log with payloads).
+ * Settings → Phonelist, in three tabs: Sync (last result, Sync Now), Logs (filterable audit log with payloads)
+ * and Photos (staff without a photo).
  */
 final class SettingsPage
 {
     private const SLUG = 'intranet-phonelist';
     private const PER_PAGE = 100;
+    private const TABS = ['sync' => 'Sync', 'logs' => 'Logs', 'photos' => 'Photos'];
     private const LEVEL_COLOURS = ['error' => '#d63638', 'warning' => '#996800', 'notice' => '#2271b1', 'info' => '#50575e', 'debug' => '#8c8f94'];
 
     public function __construct(
         private readonly Synchronizer $synchronizer,
+        private readonly Photos $photos,
         private readonly Log $log,
     ) {
     }
@@ -43,29 +48,83 @@ final class SettingsPage
 
     public function render(): void
     {
-        $tab = ($_GET['tab'] ?? '') === 'logs' ? 'logs' : 'sync';
+        $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'sync';
         $notices = [
             'synced' => ['success', 'Sync completed.'],
             'sync_failed' => ['error', 'Sync did not complete cleanly. See the log.'],
             'logs_deleted' => ['success', sprintf('Deleted %d log entries.', absint($_GET['count'] ?? 0))],
         ];
         $notice = $notices[$_GET['notice'] ?? ''] ?? null;
-        $tabUrl = fn (string $name): string => admin_url('options-general.php?page=' . self::SLUG . ($name === 'logs' ? '&tab=logs' : ''));
         ?>
         <div class="wrap">
             <h1>Phonelist</h1>
             <nav class="nav-tab-wrapper">
-                <a href="<?= esc_url($tabUrl('sync')) ?>" class="nav-tab <?= $tab === 'sync' ? 'nav-tab-active' : '' ?>">Sync</a>
-                <a href="<?= esc_url($tabUrl('logs')) ?>" class="nav-tab <?= $tab === 'logs' ? 'nav-tab-active' : '' ?>">Logs</a>
+                <?php foreach (self::TABS as $name => $label) : ?>
+                    <a href="<?= esc_url($this->url($name === 'sync' ? [] : ['tab' => $name])) ?>" class="nav-tab <?= $tab === $name ? 'nav-tab-active' : '' ?>"><?= esc_html($label) ?></a>
+                <?php endforeach; ?>
             </nav>
 
             <?php if ($notice) : ?>
                 <div class="notice notice-<?= esc_attr($notice[0]) ?> is-dismissible"><p><?= esc_html($notice[1]) ?></p></div>
             <?php endif; ?>
 
-            <?php $tab === 'logs' ? $this->renderLogs() : $this->renderSync(); ?>
+            <?php match ($tab) {
+                'photos' => $this->renderPhotos(),
+                'logs' => $this->renderLogs(),
+                default => $this->renderSync(),
+            }; ?>
         </div>
         <?php
+    }
+
+    private function renderPhotos(): void
+    {
+        if (!$this->photos->enabled()) {
+            echo '<div class="notice notice-warning inline"><p>Staff photos are off: <code>INTRANET_PHONELIST_PHOTOS_DIR</code> is not set to an existing folder.</p></div>';
+            return;
+        }
+
+        $total = (int) wp_count_posts(PostTypes::STAFF)->publish;
+        $missing = get_posts([
+            'post_type' => PostTypes::STAFF,
+            'numberposts' => -1,
+            'orderby' => 'title',
+            'order' => 'ASC',
+            'meta_query' => [['key' => '_thumbnail_id', 'compare' => 'NOT EXISTS']],
+        ]);
+        ?>
+        <p>
+            <?= (int) ($total - count($missing)) ?> of <?= (int) $total ?> staff have a photo.
+            Photos are matched by file name in <code><?= esc_html($this->photos->directory()) ?></code> on each sync.
+        </p>
+        <?php if (!$missing) : ?>
+            <p>Everyone has a photo.</p>
+            <?php return; ?>
+        <?php endif; ?>
+
+        <h2><?= count($missing) ?> without a photo</h2>
+        <table class="widefat striped" style="max-width:1100px">
+            <thead><tr><th>Name</th><th>Division</th><th>File names looked for</th></tr></thead>
+            <tbody>
+            <?php foreach ($missing as $person) : ?>
+                <?php
+                $meta = fn (string $key): string => (string) get_post_meta($person->ID, $key, true);
+                $tried = Photos::candidates(['PREF_NAME' => $meta('pref_name'), 'NAME_FIRST' => $meta('name_first'), 'NAME_LAST_CO' => $meta('name_last_co'), 'DIV_CODE' => $meta('div_code')]);
+                ?>
+                <tr>
+                    <td><a href="<?= esc_url(get_edit_post_link($person->ID)) ?>"><?= esc_html($person->post_title) ?></a></td>
+                    <td><code><?= esc_html($meta('div_code')) ?></code></td>
+                    <td><code><?= implode('.jpg</code>, <code>', array_map('esc_html', $tried)) ?>.jpg</code></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php
+    }
+
+    private function url(array $args = []): string
+    {
+        return add_query_arg($args, admin_url('options-general.php?page=' . self::SLUG));
     }
 
     private function renderSync(): void
@@ -103,18 +162,29 @@ final class SettingsPage
     private function renderLogs(): void
     {
         $actions = $this->log->actions();
+        $runs = $this->log->runs();
         $filters = [
+            'run_id' => isset($runs[$_GET['run'] ?? '']) ? $_GET['run'] : '',
             'level' => in_array($_GET['level'] ?? '', Log::LEVELS, true) ? $_GET['level'] : '',
             'action' => in_array($_GET['log_action'] ?? '', $actions, true) ? $_GET['log_action'] : '',
-            'run_id' => sanitize_text_field(wp_unslash($_GET['run'] ?? '')),
         ];
         $paged = max(1, absint($_GET['paged'] ?? 1));
         $log = $this->log->page($paged, self::PER_PAGE, $filters);
         $postUrl = admin_url('admin-post.php');
+        $when = fn (string $utc): string => wp_date('j M Y g:i:sa', strtotime($utc . ' UTC'));
         ?>
         <form method="get" style="margin:12px 0 8px">
             <input type="hidden" name="page" value="<?= esc_attr(self::SLUG) ?>">
             <input type="hidden" name="tab" value="logs">
+            <label for="iphl-run">Run</label>
+            <select id="iphl-run" name="run">
+                <option value="">All runs</option>
+                <?php foreach ($runs as $runId => $run) : ?>
+                    <option value="<?= esc_attr($runId) ?>" <?php selected($filters['run_id'], $runId); ?>>
+                        <?= esc_html($when($run->started) . ' · ' . $run->triggered_by . ($run->status ? ' · ' . $run->status : '')) ?>
+                    </option>
+                <?php endforeach; ?>
+            </select>
             <label for="iphl-level">Level</label>
             <select id="iphl-level" name="level">
                 <option value="">All</option>
@@ -129,40 +199,64 @@ final class SettingsPage
                     <option value="<?= esc_attr($action) ?>" <?php selected($filters['action'], $action); ?>><?= esc_html($action) ?></option>
                 <?php endforeach; ?>
             </select>
-            <?php if ($filters['run_id']) : ?>
-                <input type="hidden" name="run" value="<?= esc_attr($filters['run_id']) ?>">
-                Run <code><?= esc_html(substr($filters['run_id'], 0, 8)) ?></code> (<a href="<?= esc_url(remove_query_arg(['run', 'paged'])) ?>">all runs</a>)
-            <?php endif; ?>
             <?php submit_button('Filter', '', '', false); ?>
         </form>
 
-        <table class="widefat striped">
-            <thead><tr><th>Time (UTC)</th><th>Level</th><th>Run</th><th>Trigger</th><th>Action</th><th>Type</th><th>Source ID</th><th>Label</th><th>Message</th></tr></thead>
+        <style>
+            .iphl-log td { vertical-align: middle; }
+            .iphl-log tr.iphl-entry:nth-of-type(4n+1) { background: #f6f7f7; }
+            .iphl-log .iphl-sub { color: #646970; font-size: 12px; }
+            .iphl-log .iphl-detail > td { background: #fcfcfc; border-left: 3px solid #2271b1; }
+            .iphl-log .iphl-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow: auto; }
+        </style>
+        <table class="widefat iphl-log">
+            <thead><tr><th>Time</th><th>Run</th><th>Level</th><th>Action</th><th>Record</th><th>Message</th><th>Details</th></tr></thead>
             <tbody>
             <?php if (!$log['rows']) : ?>
-                <tr><td colspan="9">No log entries.</td></tr>
+                <tr><td colspan="7">No log entries.</td></tr>
             <?php endif; ?>
             <?php foreach ($log['rows'] as $row) : ?>
-                <?php $context = $row->context ? json_decode($row->context, true) : null; ?>
-                <tr>
-                    <td><?= esc_html($row->created_at) ?></td>
-                    <td><?= $this->badge($row->level) ?></td>
-                    <td><a href="<?= esc_url(add_query_arg(['run' => $row->run_id, 'paged' => false])) ?>"><code><?= esc_html(substr($row->run_id, 0, 8)) ?></code></a></td>
-                    <td><?= esc_html($row->triggered_by) ?></td>
-                    <td><?= esc_html($row->action) ?></td>
-                    <td><?= esc_html($row->post_type) ?></td>
-                    <td><?= esc_html($row->source_id) ?></td>
-                    <td><?= esc_html($row->label) ?></td>
+                <tr class="iphl-entry">
+                    <td><?= esc_html($when($row->created_at)) ?></td>
                     <td>
-                        <?= esc_html($row->message) ?>
-                        <?php if ($context) : ?>
-                            <details><summary>Details</summary><?php $this->renderContext($context); ?></details>
+                        <a href="<?= esc_url(add_query_arg(['run' => $row->run_id, 'paged' => false])) ?>"><code><?= esc_html(substr($row->run_id, 0, 8)) ?></code></a>
+                        <div class="iphl-sub"><?= esc_html($row->triggered_by) ?></div>
+                    </td>
+                    <td><?= $this->badge($row->level) ?></td>
+                    <td><?= esc_html($row->action) ?></td>
+                    <td>
+                        <?= esc_html($row->label) ?>
+                        <?php if ($row->source_id) : ?>
+                            <div class="iphl-sub"><?= esc_html(str_replace('iphl_', '', (string) $row->post_type)) ?> · <code><?= esc_html($row->source_id) ?></code></div>
+                        <?php endif; ?>
+                    </td>
+                    <td><?= esc_html($row->message) ?></td>
+                    <td>
+                        <?php if ($row->context) : ?>
+                            <button type="button" class="button button-small iphl-toggle" aria-expanded="false" aria-controls="iphl-detail-<?= (int) $row->id ?>">View</button>
+                        <?php endif; ?>
+                    </td>
+                </tr>
+                <tr class="iphl-detail" id="iphl-detail-<?= (int) $row->id ?>" hidden>
+                    <td colspan="7">
+                        <?php if ($row->context) : ?>
+                            <pre><?= esc_html(wp_json_encode(json_decode($row->context), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                         <?php endif; ?>
                     </td>
                 </tr>
             <?php endforeach; ?>
             </tbody>
         </table>
+        <script>
+            document.addEventListener('click', (event) => {
+                const button = event.target.closest('.iphl-toggle');
+                if (!button) return;
+                const open = button.getAttribute('aria-expanded') === 'true';
+                button.setAttribute('aria-expanded', String(!open));
+                button.textContent = open ? 'View' : 'Hide';
+                document.getElementById(button.getAttribute('aria-controls')).hidden = open;
+            });
+        </script>
         <div class="tablenav"><div class="tablenav-pages">
             <?= wp_kses_post(paginate_links([
                 'base' => add_query_arg('paged', '%#%'),
@@ -186,43 +280,6 @@ final class SettingsPage
             <?php submit_button('Delete all logs', 'delete', 'submit', false); ?>
         </form>
         <?php
-    }
-
-    /**
-     * Payload, shaped for reading: changes as from → to, item lists as links, anything else as JSON.
-     */
-    private function renderContext(array $context): void
-    {
-        if (isset($context['changes'])) {
-            echo '<table class="widefat" style="margin-top:6px"><thead><tr><th>Field</th><th>From</th><th>To</th></tr></thead><tbody>';
-            foreach ($context['changes'] as $field => $change) {
-                is_array($change)
-                    ? printf('<tr><td>%s</td><td>%s</td><td>%s</td></tr>', esc_html($field), esc_html($change['from']), esc_html($change['to']))
-                    : printf('<tr><td>%s</td><td colspan="2"><em>%s</em></td></tr>', esc_html($field), esc_html($change));
-            }
-            echo '</tbody></table>';
-            unset($context['changes']);
-        }
-
-        if (isset($context['items'])) {
-            echo '<ul style="list-style:disc;margin:6px 0 0 20px;columns:2">';
-            foreach ($context['items'] as $item) {
-                $label = esc_html($item['label'] ?? '');
-                $link = !empty($item['postId']) ? get_edit_post_link((int) $item['postId']) : null;
-                $extra = array_diff_key($item, array_flip(['postId', 'label']));
-                printf(
-                    '<li>%s <span style="color:#646970">%s</span></li>',
-                    $link ? sprintf('<a href="%s">%s</a>', esc_url($link), $label) : $label,
-                    esc_html(implode(' · ', array_map(fn ($value): string => is_array($value) ? implode(', ', $value) : (string) $value, $extra))),
-                );
-            }
-            echo '</ul>';
-            unset($context['items']);
-        }
-
-        if ($context) {
-            printf('<pre style="white-space:pre-wrap;margin-top:6px">%s</pre>', esc_html(wp_json_encode($context, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)));
-        }
     }
 
     private function badge(string $level): string

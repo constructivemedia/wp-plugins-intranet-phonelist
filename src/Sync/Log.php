@@ -117,6 +117,21 @@ final class Log
     }
 
     /**
+     * @return array<string, object{started: string, triggered_by: string, status: ?string}> Recent runs, newest first, keyed by run ID.
+     */
+    public function runs(int $limit = 50): array
+    {
+        $rows = $this->db->get_results($this->db->prepare(
+            "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by,
+                MAX(CASE WHEN action = 'sync_end' THEN label END) AS status
+            FROM {$this->table} GROUP BY run_id ORDER BY started DESC LIMIT %d",
+            $limit
+        ));
+
+        return array_column($rows, null, 'run_id');
+    }
+
+    /**
      * @return array<string, int> Level => entries in one run.
      */
     public function levelCounts(string $runId): array
