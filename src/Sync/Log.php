@@ -12,7 +12,7 @@ final class Log
     public const LEVELS = ['error', 'warning', 'notice', 'info', 'debug'];
 
     /** Bump when the table changes; the table is upgraded on the next load. */
-    private const SCHEMA = '2';
+    private const SCHEMA = '3';
     private const SCHEMA_OPTION = 'intranet_phonelist_log_schema';
 
     private readonly string $table;
@@ -30,6 +30,7 @@ final class Log
             run_id char(36) NOT NULL,
             created_at datetime NOT NULL,
             triggered_by varchar(10) NOT NULL,
+            user_id bigint(20) unsigned NOT NULL DEFAULT 0,
             level varchar(10) NOT NULL DEFAULT 'info',
             action varchar(20) NOT NULL,
             post_type varchar(20) DEFAULT NULL,
@@ -43,6 +44,7 @@ final class Log
             KEY level (level),
             KEY action (action)
         ) {$this->db->get_charset_collate()};");
+        $this->db->query("UPDATE {$this->table} SET triggered_by = 'manual' WHERE triggered_by = 'button'"); // Renamed in schema 3.
         update_option(self::SCHEMA_OPTION, self::SCHEMA);
     }
 
@@ -71,6 +73,7 @@ final class Log
             'run_id' => $runId,
             'created_at' => current_time('mysql', true),
             'triggered_by' => $trigger,
+            'user_id' => get_current_user_id(), // 0 for cron/CLI.
             'level' => $level,
             'action' => $action,
             'post_type' => $postType,
@@ -117,13 +120,13 @@ final class Log
     }
 
     /**
-     * @return array<string, object{started: string, triggered_by: string, status: ?string}> Recent runs, newest first, keyed by run ID.
+     * @return array<string, object{started: string, triggered_by: string, user_id: int, status: ?string}> Recent runs, newest first, keyed by run ID.
      */
     public function runs(int $limit = 50): array
     {
         $rows = $this->db->get_results($this->db->prepare(
-            "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by,
-                MAX(CASE WHEN action = 'sync_end' THEN label END) AS status
+            "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by, MAX(user_id) AS user_id,
+                MAX(CASE WHEN action = 'sync_end' THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context, '$.status')), NULLIF(label, '')) END) AS status
             FROM {$this->table} GROUP BY run_id ORDER BY started DESC LIMIT %d",
             $limit
         ));

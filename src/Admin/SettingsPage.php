@@ -35,7 +35,7 @@ final class SettingsPage
     public function handleSync(): void
     {
         $this->authorize('intranet_phonelist_sync');
-        $result = $this->synchronizer->run('button');
+        $result = $this->synchronizer->run('manual');
         $this->redirect(['notice' => $result['status'] === 'completed' ? 'synced' : 'sync_failed']);
     }
 
@@ -181,7 +181,11 @@ final class SettingsPage
                 <option value="">All runs</option>
                 <?php foreach ($runs as $runId => $run) : ?>
                     <option value="<?= esc_attr($runId) ?>" <?php selected($filters['run_id'], $runId); ?>>
-                        <?= esc_html($when($run->started) . ' · ' . $run->triggered_by . ($run->status ? ' · ' . $run->status : '')) ?>
+                        <?= esc_html(implode(' · ', array_filter([
+                            $when($run->started),
+                            $this->who($run->triggered_by, (int) $run->user_id),
+                            $run->status !== 'completed' ? $run->status : null, // Only worth showing when a run didn't complete.
+                        ]))) ?>
                     </option>
                 <?php endforeach; ?>
             </select>
@@ -210,24 +214,24 @@ final class SettingsPage
             .iphl-log .iphl-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow: auto; }
         </style>
         <table class="widefat iphl-log">
-            <thead><tr><th>Time</th><th>Run</th><th>Level</th><th>Action</th><th>Record</th><th>Message</th><th>Details</th></tr></thead>
+            <thead><tr><th>Time</th><th>Run</th><th>Level</th><th>Action</th><th>Record</th><th>ID</th><th>Message</th><th>Details</th></tr></thead>
             <tbody>
             <?php if (!$log['rows']) : ?>
-                <tr><td colspan="7">No log entries.</td></tr>
+                <tr><td colspan="8">No log entries.</td></tr>
             <?php endif; ?>
             <?php foreach ($log['rows'] as $row) : ?>
                 <tr class="iphl-entry">
                     <td><?= esc_html($when($row->created_at)) ?></td>
                     <td>
                         <a href="<?= esc_url(add_query_arg(['run' => $row->run_id, 'paged' => false])) ?>"><code><?= esc_html(substr($row->run_id, 0, 8)) ?></code></a>
-                        <div class="iphl-sub"><?= esc_html($row->triggered_by) ?></div>
+                        <div class="iphl-sub"><?= esc_html($this->who($row->triggered_by, (int) $row->user_id)) ?></div>
                     </td>
                     <td><?= $this->badge($row->level) ?></td>
                     <td><?= esc_html($row->action) ?></td>
+                    <td><?= in_array($row->action, ['sync_start', 'sync_end'], true) ? '' : esc_html($row->label) ?></td>
                     <td>
-                        <?= esc_html($row->label) ?>
                         <?php if ($row->source_id) : ?>
-                            <div class="iphl-sub"><?= esc_html(str_replace('iphl_', '', (string) $row->post_type)) ?> · <code><?= esc_html($row->source_id) ?></code></div>
+                            <code title="<?= esc_attr(str_replace('iphl_', '', (string) $row->post_type)) ?>"><?= esc_html($row->source_id) ?></code>
                         <?php endif; ?>
                     </td>
                     <td><?= esc_html($row->message) ?></td>
@@ -238,7 +242,7 @@ final class SettingsPage
                     </td>
                 </tr>
                 <tr class="iphl-detail" id="iphl-detail-<?= (int) $row->id ?>" hidden>
-                    <td colspan="7">
+                    <td colspan="8">
                         <?php if ($row->context) : ?>
                             <pre><?= esc_html(wp_json_encode(json_decode($row->context), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre>
                         <?php endif; ?>
@@ -280,6 +284,16 @@ final class SettingsPage
             <?php submit_button('Delete all logs', 'delete', 'submit', false); ?>
         </form>
         <?php
+    }
+
+    /**
+     * 'cli', or 'manual · Display Name' when a logged-in user started it.
+     */
+    private function who(string $trigger, int $userId): string
+    {
+        $user = $userId ? get_userdata($userId) : false;
+
+        return $user ? "$trigger · {$user->display_name}" : $trigger;
     }
 
     private function badge(string $level): string

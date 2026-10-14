@@ -28,6 +28,8 @@ final class Synchronizer
     private array $counts = [];
     /** @var array<string, array<string, array>> Type => key => the row exactly as oci8 returned it, for the log. */
     private array $raw = [];
+    /** @var array<string, array> "type|key" => created/updated entry, held until photos have run so each person gets one entry. */
+    private array $pending = [];
 
     public function __construct(
         private readonly OracleSource $source,
@@ -38,7 +40,7 @@ final class Synchronizer
     }
 
     /**
-     * @param string $trigger 'cli' (manual or cron) or 'button'.
+     * @param string $trigger 'cli' (WP-CLI or cron) or 'manual' (Sync Now; the user is logged with each entry).
      * @return array{status: string, counts: array<string, int>, message: string}
      */
     public function run(string $trigger, ?string $staffId = null): array
@@ -53,8 +55,9 @@ final class Synchronizer
             return ['status' => 'failed', 'counts' => $this->counts, 'message' => 'A sync is already running.'];
         }
 
-        $this->record('info', 'sync_start', $full ? null : PostTypes::STAFF, $staffId, $full ? 'full' : 'single');
+        $this->record('info', 'sync_start', message: $full ? 'Full sync.' : "Single staff sync: $staffId.");
         $message = '';
+        $this->pending = [];
 
         try {
             $types = $full ? PostTypes::synced() : [PostTypes::STAFF => PostTypes::synced()[PostTypes::STAFF]];
@@ -85,6 +88,7 @@ final class Synchronizer
             $message = $e->getMessage();
             $this->record('error', 'error', message: $message);
         } finally {
+            $this->flushPending();
             delete_option(self::LOCK);
         }
 
@@ -94,7 +98,7 @@ final class Synchronizer
             $message .= " Photos added $photos, no photo $noPhoto.";
         }
         $level = ['completed' => 'info', 'completed_with_errors' => 'warning', 'failed' => 'error'][$status];
-        $this->record($level, 'sync_end', $full ? null : PostTypes::STAFF, $staffId, $status, $message, $this->counts);
+        $this->record($level, 'sync_end', message: $message, context: ['status' => $status, 'counts' => $this->counts]);
         if ($full) {
             update_option(self::LAST_SYNC, ['time' => time(), 'trigger' => $trigger, 'status' => $status, 'message' => $message, 'run' => $this->runId], false);
         }
@@ -175,14 +179,12 @@ final class Synchronizer
                     update_field(PostTypes::fieldKey($type, $column), $item['row'][$column], $postId);
                 }
 
-                $oracleRow = Planner::redact($this->raw[$type][$id] ?? []);
                 if ($operation === 'create') {
                     $this->counts['created']++;
-                    $this->record('info', 'created', $type, $id, $title, context: ['oracle' => $oracleRow]);
+                    $this->pend($type, $id, $title, 'created');
                 } else {
-                    $changes = Planner::changes($before, $item['row']);
                     $this->counts['updated']++;
-                    $this->record('info', 'updated', $type, $id, $title, implode(', ', array_keys($changes)), ['changes' => $changes, 'oracle' => $oracleRow]);
+                    $this->pend($type, $id, $title, 'updated', Planner::changes($before, $item['row']));
                 }
             }
         }
@@ -214,8 +216,10 @@ final class Synchronizer
             if (!isset($posts[$id])) {
                 continue; // LEFT, or failed to save.
             }
+            $postId = $posts[$id]['post_id'];
+            $before = $this->photoFile($postId);
             try {
-                $result = $this->photos->attach($posts[$id]['post_id'], $row);
+                $result = $this->photos->attach($postId, $row);
             } catch (Throwable $e) {
                 $this->counts['errors']++;
                 $this->record('error', 'error', PostTypes::STAFF, $id, $title($row), $e->getMessage());
@@ -226,10 +230,44 @@ final class Synchronizer
             if ($result === 'missing') {
                 $this->counts['no_photo']++;
             } elseif ($result !== null) {
+                // A photo change is part of the person's created/updated entry, not an entry of its own.
                 $this->counts['photos']++;
-                $this->record('info', 'photo', PostTypes::STAFF, $id, $title($row), $result, ['file' => get_post_meta($posts[$id]['post_id'], Photos::SOURCE, true)]);
+                $this->pend(PostTypes::STAFF, $id, $title($row), 'updated', ['PHOTO' => ['from' => $before, 'to' => $this->photoFile($postId)]]);
             }
         }
+    }
+
+    /**
+     * File name of a staff member's current photo ('' if none), from the fingerprint Photos stores.
+     */
+    private function photoFile(int $postId): string
+    {
+        return explode('|', (string) get_post_meta($postId, Photos::SOURCE, true))[0];
+    }
+
+    /**
+     * Queue a created/updated entry, merging into one already queued for the same record
+     * (e.g. data changes and a new photo in the same sync become one 'updated' entry).
+     */
+    private function pend(string $type, string $id, string $title, string $action, array $changes = []): void
+    {
+        $key = "$type|$id";
+        $entry = $this->pending[$key] ?? ['type' => $type, 'id' => $id, 'title' => $title, 'action' => $action, 'changes' => []];
+        $entry['changes'] += $changes;
+        $this->pending[$key] = $entry;
+    }
+
+    private function flushPending(): void
+    {
+        foreach ($this->pending as $entry) {
+            $context = ['oracle' => Planner::redact($this->raw[$entry['type']][$entry['id']] ?? [])];
+            if ($entry['changes']) {
+                $context = ['changes' => $entry['changes']] + $context;
+            }
+            $message = $entry['action'] === 'updated' ? implode(', ', array_keys($entry['changes'])) : null;
+            $this->record('info', $entry['action'], $entry['type'], $entry['id'], $entry['title'], $message, $context);
+        }
+        $this->pending = [];
     }
 
     private function warnUnassignedDivisions(): void

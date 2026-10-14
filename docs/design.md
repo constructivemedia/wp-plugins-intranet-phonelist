@@ -71,7 +71,7 @@ One array per post type (`ORACLE_COLUMN => acf_field_name`, lowercased). Post ti
 
 ## Sync flow
 
-`Synchronizer::run(string $trigger, ?string $staffId = null): array` — `$trigger` is `cli` (manual or nightly cron) or `button`. With `$staffId`, it fetches only that row (`WHERE ID = :id`, bound), skips divisions and the empty-table guard, scopes the existing posts to that one ID, and leaves the last-sync summary untouched.
+`Synchronizer::run(string $trigger, ?string $staffId = null): array` — `$trigger` is `cli` (WP-CLI or nightly cron) or `manual` (**Sync Now**). With `$staffId`, it fetches only that row (`WHERE ID = :id`, bound), skips divisions and the empty-table guard, scopes the existing posts to that one ID, and leaves the last-sync summary untouched.
 
 1. **Lock**: `add_option` lock, which is atomic; a lock older than 1 hour is treated as dead. If a lock is held → log `error` and return.
 2. **Fetch** (`OracleSource`): `SELECT <mapped columns>` from `DIVISIONS` and `PHONE_LIST_INTRANET`. On a full sync, divisions are then narrowed to those with at least one current staff member. A connection or query failure, an empty table, or no staffed divisions → log `error` and abort. **Nothing is deleted.**
@@ -88,7 +88,8 @@ The hash covers the Oracle row only, so changing how titles are built won't touc
 | `id` | bigint unsigned, PK, auto-increment |
 | `run_id` | char(36) — UUID per run |
 | `created_at` | datetime (UTC) |
-| `triggered_by` | varchar(10) — `cli`/`button` (`trigger` is a MySQL reserved word) |
+| `triggered_by` | varchar(10) — `cli`/`manual` (`trigger` is a MySQL reserved word; `button` before schema 3) |
+| `user_id` | bigint unsigned — the logged-in user who started it (Sync Now), 0 for CLI/cron |
 | `level` | varchar(10) — `error`, `warning`, `notice`, `info`, `debug` |
 | `action` | varchar(20) — `sync_start`, `created`, `updated`, `deleted`, `photo`, `no_company`, `bad_date`, `fetch`, `plan`, `error`, `sync_end` |
 | `post_type` | varchar(20), nullable |
@@ -103,7 +104,7 @@ Indexes: `run_id`, `created_at`, `level`, `action`. The schema is versioned (`in
 - `error`: failures.
 - `warning`: one summary entry per sync for divisions with no company and for dates that couldn't be read. The payload lists the affected `items`. (Staff without a photo are shown live on the Photos tab instead.)
 - `notice`: deletions, with the last division in the payload.
-- `info`: start/end, created (payload: `oracle`, the row as oci8 returned it), updated (payload: `changes`, field → from/to, plus `oracle`), photo (payload: the source file).
+- `info`: start/end (end payload: `status`, `counts`), created (payload: `oracle`, the row as oci8 returned it), updated (payload: `changes`, field → from/to, plus `oracle`). A photo added or replaced is part of the person's created/updated entry as `changes.PHOTO` (file from → to), so each record gets at most one entry per sync.
 - `debug`: `fetch` (rows, ms) and `plan` (counts), only when `WP_DEBUG` is on.
 
 `PostTypes::PRIVATE_COLUMNS` (`DOB`, `HOME_PHONE`) are never logged by value; changes to them are recorded as "(changed)".
