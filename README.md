@@ -144,14 +144,14 @@ In the site's `composer.json`:
         { "type": "vcs", "url": "https://github.com/constructivemedia/wp-plugins-intranet-phonelist.git" }
     ],
     "require": {
-        "constructivemedia/intranet-phonelist": "^1.0"
+        "constructivemedia/wp-plugins-intranet-phonelist": "^1.7.1"
     }
 }
 ```
 
 The repository is private, so each site needs GitHub access: either a token (`composer config --global github-oauth.github.com <token>`), or an SSH key with `"url": "git@github.com:constructivemedia/wp-plugins-intranet-phonelist.git"`. Source installs (`--prefer-source`, a git clone) work the same as release zips.
 
-The plugin installs to `wp-content/plugins/intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
+The package is named after the repository; releases before `v1.7.1` were published as `constructivemedia/intranet-phonelist`. The plugin installs to `wp-content/plugins/intranet-phonelist/` either way (`installer-name`), so WordPress sees the same plugin. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
 
 ## Releasing
 

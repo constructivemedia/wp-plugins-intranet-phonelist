@@ -1,5 +1,5 @@
 {
-    "name": "constructivemedia/intranet-phonelist",
+    "name": "constructivemedia/wp-plugins-intranet-phonelist",
     "description": "Intranet phone list WordPress plugin.",
     "type": "wordpress-plugin",
     "license": "proprietary",
@@ -26,6 +26,7 @@
         }
     ],
     "extra": {
+        "installer-name": "intranet-phonelist",
         "wordpress-install-dir": "wp",
         "installer-paths": {
             "wp/wp-content/plugins/{$name}/": ["type:wordpress-plugin"]
