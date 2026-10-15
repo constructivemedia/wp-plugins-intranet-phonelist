@@ -1,13 +1,13 @@
 <?php
 
-namespace ConstructiveMedia\IntranetPhonelist\Sync;
+namespace ConstructiveMedia\IntranetPhonelist\Ingest;
 
 use libphonenumber\NumberParseException;
 use libphonenumber\PhoneNumberFormat;
 use libphonenumber\PhoneNumberUtil;
 
 /**
- * Phone numbers from Oracle in one format, international E.164 ('+61437793226', '+61894647800'),
+ * Phone numbers in one format, international E.164 ('+61437793226', '+61894647800'),
  * using giggsey/libphonenumber-for-php-lite.
  */
 final class PhoneNumbers

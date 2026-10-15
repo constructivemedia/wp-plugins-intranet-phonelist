@@ -8,6 +8,7 @@ require __DIR__ . '/../vendor/autoload.php';
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
+use ConstructiveMedia\IntranetPhonelist\Schema;
 use ConstructiveMedia\IntranetPhonelist\Staff;
 use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
@@ -183,5 +184,37 @@ assert($match(division: 'JWH') && !$match(division: 'jwh') && !$match(division: 
 assert($match(tag: '08') && !$match(tag: '8'));
 assert($match(name: 'Jan', division: 'JWH', tag: '08') && !$match(name: 'Jan', division: 'JIT'));
 assert(!isset($person->jsonSerialize()['birthday']) && !isset($person->jsonSerialize()['daysUntil']));
+
+// Schema: validation and normalisation of pushed records.
+$ok = Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00+08:00', 'first_name' => 'Jane', 'last_name' => 'Citizen',
+    'status' => 'active', 'mobile' => '0437 793 226', 'hide_birthday' => true, 'date_of_birth' => '1985-09-05', 'bogus' => 'x'], false);
+assert($ok['errors'] === []);
+assert($ok['data']['mobile'] === '+61437793226' && $ok['data']['hide_birthday'] === '1' && $ok['data']['date_of_birth'] === '19850905');
+assert(!isset($ok['data']['bogus']) && !isset($ok['data']['id']) && !isset($ok['data']['updated_at']));
+assert(array_key_exists('email', $ok['data']) && $ok['data']['email'] === null); // full write: missing optional fields are cleared
+
+$bad = Schema::validate('staff', ['id' => 'S1', 'updated_at' => 'yesterday', 'first_name' => '', 'status' => 'active', 'email' => 'nope', 'start_date' => '05Sep85', 'hide_birthday' => 'y'], false);
+assert(array_column($bad['errors'], 'field') === ['updated_at', 'first_name', 'last_name', 'email', 'start_date', 'hide_birthday']);
+assert(Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00', 'first_name' => 'A', 'last_name' => 'B', 'status' => 'active'], false)['errors'][0]['field'] === 'updated_at'); // no offset
+assert(Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00Z', 'first_name' => 'A', 'last_name' => 'B', 'status' => 'active', 'start_date' => '2026-02-31'], false)['errors'][0]['field'] === 'start_date');
+
+$patch = Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00Z', 'email' => null], true);
+assert($patch['errors'] === [] && $patch['data'] === ['email' => null]);    // partial: only what was sent
+
+assert(Schema::validate('divisions', ['id' => 'JWH', 'updated_at' => '2026-10-15T09:30:00Z'], false)['errors'][0]['field'] === 'name');
+assert(Schema::validate('staff', ['updated_at' => '2026-10-15T09:30:00Z'], true)['errors'][0]['field'] === 'id');
+assert(Schema::keeps('active') && !Schema::keeps('terminated') && !Schema::keeps(null));
+assert(Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00+08:00', 'first_name' => 'A', 'last_name' => 'B', 'status' => 'active', 'phone' => '12'], false)['data']['phone'] === '12'); // unreadable phone kept as sent
+assert(Schema::updatedAt(['updated_at' => '2026-10-15T09:30:00+08:00'])->format('U') === (new DateTimeImmutable('2026-10-15T01:30:00Z'))->format('U'));
+assert(Schema::updatedAt(['updated_at' => 'nope']) === null && Schema::updatedAt([]) === null);
+
+// Editor layout: each tab's widths fill whole rows.
+foreach (array_keys(Schema::TYPES) as $type) {
+    $rows = [];
+    foreach (Schema::fields($type) as $field => $config) {
+        $rows[$config['tab']] = (($rows[$config['tab']] ?? 0) + $config['width']) % 100;
+    }
+    assert(array_filter($rows) === [], "$type has an unfinished row");
+}
 
 echo "plan-check OK\n";
