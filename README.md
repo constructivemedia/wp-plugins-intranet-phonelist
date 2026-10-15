@@ -1,15 +1,15 @@
 # Intranet Phonelist
 
-A WordPress plugin that mirrors staff and divisions from JWH's Oracle database into WordPress. Theme developers can then query them in PHP or over REST.
+A WordPress plugin holding JWH's companies, divisions and staff for the intranet phone list. JWH's Data Hub pushes them in through a signed REST API, and theme developers read them in PHP or over REST.
 
-- **Company** (entered by hand in WordPress) → **Division** (synced from `DIVISIONS`) → **Staff** (synced from `PHONE_LIST_INTRANET`).
-- Requires PHP 8.1+, Advanced Custom Fields, the `oci8` extension with Oracle Instant Client, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
-- Oracle access is read-only: the plugin only ever runs `SELECT` on those two tables.
+- **Structure:** **Company** → **Division** → **Staff**. Data Hub owns the records. Which company a division belongs to is set in WordPress.
+- **Requirements:** PHP 8.1+, Advanced Custom Fields, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
+- **For Data Hub:** the API contract is [`docs/openapi.yaml`](docs/openapi.yaml), and the guide for JWH IT is [`docs/integration-guide.md`](docs/integration-guide.md).
 
 ## Local setup (DDEV)
 
 ```bash
-ddev start                 # builds Instant Client + oci8 (.ddev/web-build/Dockerfile, x86_64 only)
+ddev start                 # builds Instant Client + oci8 (.ddev/web-build/Dockerfile, x86_64 only), for the Oracle import
 ddev composer install      # WordPress → wp/, plugins, and links this repo into wp/wp-content/plugins/
 ddev wp core install --url=https://wp-intranet-phonelist.ddev.site --title="Intranet Phonelist" \
   --admin_user=admin --admin_password=admin --admin_email=admin@example.com --skip-email
@@ -19,6 +19,7 @@ ddev wp plugin activate advanced-custom-fields codepress-admin-columns wp-plugin
 Create `.env` in the project root. It's gitignored, so never commit it. [wp-config.php](wp-config.php) reads it:
 
 ```
+INTRANET_PHONELIST_API_SECRET=        # optional locally: defaults to local-dev-secret
 INTRANET_PHONELIST_ORACLE_DSN=<host>:1521/<service_name>
 INTRANET_PHONELIST_ORACLE_USER=
 INTRANET_PHONELIST_ORACLE_PASSWORD=
@@ -26,96 +27,68 @@ INTRANET_PHONELIST_ORACLE_PASSWORD=
 
 Any WordPress constant can also be set there (`DB_*`, `WP_HOME`, `WP_DEBUG`, salts…); see `wp-config.php` for the full list and defaults.
 
-## Syncing
+**Filling a local site:** `ddev wp phonelist oracle-import` (or **Import from Oracle** on the Jobs tab) reads Oracle and sends every division and staff member through the same ingest code as the API. `--staff=<id>` imports one person. It only exists when the Oracle constants are set; production leaves them blank.
 
-```bash
-wp phonelist sync                  # full sync: mirror Oracle, delete anyone no longer there
-wp phonelist sync --staff=00001    # one person only; never deletes anyone else
-wp phonelist club-import list.txt --dry-run   # set JWH Club levels from a club page list (see JWH Club)
-```
+## How data gets in
 
-- **Nightly cron**: `0 2 * * * wp phonelist sync --path=/path/to/wordpress`, run as the web server's user (not root, or uploaded photos end up owned by root). The command prints its progress and exits non-zero unless the run is fully clean.
-- **Sync Now** runs in the background through WP-Cron, so the page returns straight away, and the Sync tab shows live progress until it finishes.
-- **One sync at a time.** The lock is refreshed as a sync works. If a sync is killed (e.g. php-fpm is restarted mid-run), the next sync takes over after 5 minutes without activity, or straight away with **Clear lock** on the Sync tab.
-- **Settings → Phonelist** has three tabs:
-  - **Sync:** the last result, any errors or warnings from it, and **Sync Now**.
-  - **Logs:** the audit log, filterable by run, level and action.
-  - **Companies:** the division → company mapping (below).
-  - **Photos:** how many staff have a photo, and who doesn't, with the file names looked for.
-- **Log levels:**
-  - `error`: failures.
-  - `warning`: divisions without a company, and values Oracle sent that couldn't be read (`bad_data`: dates stored empty, phone numbers kept as they were).
-  - `notice`: deletions.
-  - `info`: everything else.
-  - `debug`: row counts and timings, written only with `WP_DEBUG`.
-- **Log details:** **View** on any entry shows its payload as formatted JSON in a row underneath. Created and updated entries include the row as Oracle sent it, and updates also list each changed field from → to. DOB and home phone are never stored: changes to them are recorded as "(changed)" only.
-- **What gets synced**:
-  - Divisions are synced only while at least one current staff member belongs to them.
-  - IDs are matched as exact strings, so `00001` ≠ `1`.
-  - Nothing is deleted if Oracle can't be read or returns no rows.
-- **Companies come from a mapping in Settings → Phonelist → Companies,** because Oracle's `COMPANY_ID` follows the legal entity rather than the brand. Enter one company per line, followed by its division codes:
+Everything goes through one place, `Ingest\Ingestor`, whether it comes from a single API request, a batch or snapshot job, or the Oracle import.
 
-  ```
-  JWH Group: JWH, JIT
-  WA Country Builders: GTN, BSN, BNB, ALB, CDR
-  ```
+- **Identity:** records are matched only by their Data Hub `id`, stored in `_iphl_source_id`.
+- **Order:** every record carries `updated_at`. Older than what's stored is refused (`409`); identical data is `unchanged`.
+- **Status:** `active` staff are kept. Any other status deletes the person (`Schema::STATUS_ACTION`, one line to change).
+- **Locked fields:** pushed fields can't be changed in the editor. Hand-set fields stay editable: a division's **Company**, and a staff member's **JWH Club**.
+- **Batches and snapshots** go into a queue table (`wp_iphl_jobs`):
+  - The request gets `202` straight away, and the job is processed after the response is sent.
+  - A cron task every minute picks up anything left behind.
+  - Jobs run one at a time, and an interrupted one resumes where it stopped.
+  - On the server, run WP-Cron from the system cron so the sweep doesn't depend on site visits: `* * * * * wp cron event run --due-now --path=/path/to/wordpress`, as the web server's user.
 
-  - **On save, and on every full sync:** missing companies are created, and each listed division's **Company** is set. A change is logged as `COMPANY: from → to`.
-  - **Every division gets a company,** and so every staff member does:
-    1. In the mapping: the mapped company (the mapping wins).
-    2. Not in the mapping, but set by hand on the division: kept.
-    3. Neither: a company **named after the division**, created if it doesn't exist (e.g. the *Rural Building Company* division joins the *Rural Building Company* company).
-  - **Companies are matched by name and never deleted.**
+### Stored values
 
-## How synced values are stored
-
-Most columns are stored as Oracle sends them. These are converted once, at sync:
-
-| Columns | Stored as | Editor field |
+| Fields | Stored as | Editor field |
 |---|---|---|
-| `DOB`, `START_DATE`, `INDUCTION_COMPLETE_DATE`, `ON_LEAVE` | `Ymd` dates (two-digit birth years resolve to the most recent past year) | Date picker |
-| `HIDE_BIRTHDAY` | `1` for `y`, otherwise `0` | Select (Yes / No) |
-| `E_STATUS` | `active` for `e`, otherwise `inactive` | Select (Active / Inactive) |
-| `MOBILE_NO`, `PH_EXT`, `HOME_PHONE`, division `PHONE` and `FAX` | International (E.164) via libphonenumber: `+61437793226`, `+61894647800` | Text |
+| Dates (`start_date`, `on_leave_until`, `date_of_birth`) | `Ymd` | Date picker |
+| `hide_birthday` | `1` / `0` | Select (Yes / No) |
+| Phones (`mobile`, `phone`, `home_phone`, division `phone`) | E.164 via libphonenumber (`+61437793226`); unreadable numbers are kept as sent | Text |
+| Everything else | As sent | Text |
 
-- **Locked fields:** synced fields can't be changed in the editor. The sync writes them directly, and anything submitted for them from the editor is ignored. Hand-set fields (a division's Company, a staff member's JWH Club) stay editable.
-- **Area code:** 8-digit numbers with no area code are assumed to be WA (`08`); change `PhoneNumbers::DEFAULT_AREA_CODE` if that stops being true.
-- **Unreadable numbers** are kept as they were and listed in the `bad_data` warning so they can be fixed in HR.
-- **`PH_EXT`** holds direct phone numbers; the short extensions are in `VOIP`, which is stored as is.
+8-digit numbers with no area code are assumed to be WA (`08`); change `PhoneNumbers::DEFAULT_AREA_CODE` if that stops being true.
 
-## Staff links (for Admin Columns and queries)
+### Links (for Admin Columns and queries)
 
-Each sync stores three links on every staff member as ACF fields, holding post IDs:
+Stored as post IDs, so renames never need updating:
 
-| Field (meta key) | Links to | Worked out from |
-|---|---|---|
-| `division` | the division | `DIV_CODE` |
-| `company` | the company | the division's Company |
-| `reports_to` | the manager(s) | `REPORTS_TO_ID` = the manager's `POSITION_NO` (several people can share a position) |
+| Field (meta key) | On | Links to | Set from |
+|---|---|---|---|
+| `division` | staff | the division | `division_id` |
+| `company` | staff | the company | the division's Company |
+| `manager` | staff | the manager | `reports_to` (the manager's staff id) |
+| `company` | division | the company | set by hand; new divisions get the company with the same name, created if needed |
 
-- **When they're written:** only changed links are written. A staff member's `company` follows straight away when a division's Company is changed by hand or through the mapping.
-- **In the editor:** the fields are hidden and read-only; the **Relationships** box shows them, plus direct reports, which is worked out live.
-- **Admin Columns Pro** lists them as ACF fields.
-- **Admin Columns (free):** add a **Custom Field** column with the meta key (`division`, `company` or `reports_to`) and the field type **Post**. It shows linked titles.
-- **In code:** `get_field('reports_to', $postId)` returns manager post IDs. Queries can filter on the meta keys.
+- **When they're set:** links are made when a record is written, in whatever order records arrive. Staff waiting on a new division or manager are linked when it arrives.
+- **Moving a division:** saving it in the admin re-points everyone in it to its company.
+- **A full snapshot** finishes by rechecking every link.
+- **In the editor:** the fields are hidden; the **Relationships** box shows them, plus direct reports.
+- **In Admin Columns (free):** add a **Custom Field** column with the meta key and the field type **Post**.
 
-## Staff photos
+### Staff photos
 
-Oracle has no photos, so they come from a folder of files named `first_last_divcode.jpg` (e.g. `jane_citizen_jwh.jpg`). Set the folder in `wp-config.php`:
-
-```php
-define('INTRANET_PHONELIST_PHOTOS_DIR', '/path/to/staffPhotos');
-```
-
-- **When:** every sync (full or `--staff`) matches each current staff member to a file. It tries the preferred name first, then the first name, ignoring case, spaces and apostrophes.
-- **Where they go:** matched files are uploaded to the Media Library and set as the staff member's featured image.
-- **Re-syncs:** unchanged files are skipped, and a changed file replaces the photo.
+- **When a staff member is created:** if Data Hub sent a `photo_url`, it's downloaded. Otherwise a file named `first_last_divisionid.jpg` is looked for in `INTRANET_PHONELIST_PHOTOS_DIR`; only the top level of the folder is scanned.
+- **After that, photos are managed by hand.** The only exception is when Data Hub sends a different `photo_url`, which replaces the photo.
+- **A failed download** is logged as a warning; the record itself is still saved.
 - **Leavers:** their photo is deleted with them.
-- **Folder rules:** only the top level of the folder is scanned (subfolders are ignored), and the folder itself is never modified.
-- **No folder:** if the constant isn't set, photos are skipped.
-- **Gaps:** **Settings → Phonelist → Photos** lists staff without a photo and the file names it looked for. A photo set by hand in the editor is kept unless a matching file turns up.
+- **Gaps:** **Settings → Phonelist → Photos** lists staff without a photo and the file names looked for.
 
-Locally the folder is `assets/staffPhotos/` (gitignored: never commit staff photos).
+Locally the folder is `assets/staffPhotos/`, which is gitignored: never commit staff photos.
+
+## Admin
+
+- **Phonelist menu:** Companies, Divisions, Staff and JWH Club. Administrators only (`manage_options`), because staff records hold HR data. Records can be opened and edited but not added or deleted by hand.
+- **Settings → Phonelist:**
+  - **Jobs:** recent batches and snapshots, with a result per item. Development sites also get **Import from Oracle** here.
+  - **Logs:** every API request and every record outcome (including `unchanged` and `stale`), filterable by job, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value.
+  - **Photos:** staff without a photo.
+- **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`, or the `intranet_phonelist_log_days` filter), and finished jobs for 30. Both are pruned daily.
 
 ## Using it in a theme
 
@@ -129,15 +102,13 @@ foreach (Phonelist::birthdays(days: 3) as $person) {
 }
 
 // Staff search: every filter is optional and they combine with AND.
-Phonelist::staff(name: 'jul');                 // any word of the name starts with 'jul'
-Phonelist::staff(division: 'JWH', tag: '20');  // exact DIV_CODE and department code
+Phonelist::staff(name: 'jul');                         // any word of the name starts with 'jul'
+Phonelist::staff(division: 'JWH', department: '20');   // exact division ID and department code
 ```
 
 ### JWH Club
 
-Club levels are a taxonomy, managed under **Phonelist → JWH Club** (name, description and Club Logo). The standard levels (Lifetime, 40, 35 … 10 Year Club) are created the first time it's empty. Each staff member's level is set with the **JWH Club** dropdown in the editor sidebar.
-- **Set by hand.** It isn't worked out from HR data, because service can have breaks. The sync never changes it.
-- **Leavers drop off** with their record, and anyone who comes back starts again.
+Club levels are a taxonomy, managed under **Phonelist → JWH Club** (name, description and Club Logo). The standard levels (Lifetime, 40, 35 … 10 Year Club) are created the first time it's empty. Each staff member's level is set with the **JWH Club** dropdown in the editor sidebar. It's set by hand, never by Data Hub, and leavers drop off with their record.
 
 ```php
 foreach (Phonelist::club() as $level => $group) {   // 'lifetime-club', '40-year-club' … in page order; empty levels left out
@@ -147,11 +118,6 @@ foreach (Phonelist::club() as $level => $group) {   // 'lifetime-club', '40-year
     }
 }
 ```
-
-**Loading an existing list:** run `wp phonelist club-import list.txt`, with the list laid out like the club page: a level heading (`Lifetime Club`, `40 Year Club` …), then each member's name on one line and their company on the next.
-- **`--dry-run`** shows what would change without saving anything.
-- **Matching:** names are matched on the preferred name first, then the legal first name, then the email (`first.last@`, for surnames that hold a business name), ignoring case and punctuation. As a last resort, an email one letter different matches if exactly one person fits, and is listed for checking.
-- **Reported, not guessed:** names with no staff record and people listed twice (the higher level is kept).
 
 People with no staff record, such as retired Lifetime members, are added in the theme with a filter:
 
@@ -165,35 +131,44 @@ add_filter('intranet_phonelist_club', function (array $club): array {
 });
 ```
 
+**Loading an existing list:** run `wp phonelist club-import list.txt [--dry-run]`, with the list laid out like the club page:
+- **Layout:** a level heading (`Lifetime Club`, `40 Year Club` …), then each member's name on one line and their company on the next.
+- **Matching:** on the preferred name, then the legal first name, then the email.
+- **Reported, not guessed:** names with no record, and anyone listed twice.
+
 ### Staff objects
 
-`staff()`, `birthdays()` and `club()` all return `Staff` objects with these read-only properties:
-- `id`, `postId`
+`staff()`, `birthdays()` and `club()` return `Staff` objects with these read-only properties:
+- `id` (the Data Hub ID), `postId`
 - `name`, `firstName`, `lastName`
-- `position`, `email`, `mobile`, `extension` (the direct phone number from `PH_EXT`)
-- `divisionCode`, `division`, `company`
-- `tag` (department code), `tagDescription`
+- `position`, `email`, `mobile`, `phone` (direct), `extension` (VoIP)
+- `divisionId`, `division`, `company`
+- `departmentCode`, `department`
+- `onLeaveUntil` (a date, or null when not on leave)
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
-- `club` (the level's slug: `'lifetime-club'`, `'40-year-club'` … `'10-year-club'`, or null)
+- `club` (the level's slug: `'lifetime-club'`, `'40-year-club'` …, or null)
 - `birthday`, `daysUntil` (from `birthdays()` only)
 
-DOB, home phone and other HR fields are never exposed.
+Date of birth, home phone and other HR fields are never exposed.
+
+**Changes from v1:** `extension` is now the VoIP extension, and the direct number is `phone`. Also renamed: `divisionCode` → `divisionId`, `tag` → `departmentCode`, `tagDescription` → `department`, and `staff(tag:)` → `staff(department:)`.
 
 ## REST API
 
-```
-GET /wp-json/phonelist/v1/staff?name=jul&division=JWH&tag=20
-GET /wp-json/phonelist/v1/club
-```
+Everything is under `/wp-json/phonelist/v2/`:
 
-- **`/staff`** is the same as `Phonelist::staff()`, returned as JSON.
-- **`/club`** is `Phonelist::club()`, returned as a list in page order: `[{"level": "lifetime-club", "title": "Lifetime Club", "description": "…", "logo": "https://…", "members": [...]}, {"level": "40-year-club", …}]`. The filter applies here too.
+| | |
+|---|---|
+| `GET /club` | `Phonelist::club()` as a list in page order: `[{"level": "lifetime-club", "title": …, "description": …, "logo": …, "members": [...]}, …]` |
+| `GET /staff?name=&division_id=&department_code=` | Staff records as Data Hub sends them, sorted by name |
+| `GET /{companies\|divisions\|staff}/{id}` | One record |
+| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress (signed), see [`docs/integration-guide.md`](docs/integration-guide.md) |
 
-Any logged-in user can call them:
-- **Intranet pages:** the login cookie plus an `X-WP-Nonce` header (`wp_create_nonce('wp_rest')`).
-- **Scripts and other systems:** an Application Password from the user's profile, sent as HTTP Basic auth.
+**Who can read:**
+- **Logged-in users:** on intranet pages, use the login cookie plus an `X-WP-Nonce` header (`wp_create_nonce('wp_rest')`). Scripts can use an Application Password instead.
+- **Signed requests:** these are the only ones that see `date_of_birth` and `home_phone`.
 
-Requests without a login get `401`.
+The v1 `phonelist/v1` routes are gone.
 
 ## Code
 
@@ -203,13 +178,24 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 |---|---|
 | `intranet-phonelist.php` | WordPress entry point: plugin header, autoloader, `Plugin::boot()` |
 | `src/Plugin.php` | Wires everything together; the only place objects are built |
-| `src/PostTypes.php` | Post types, the Oracle column mapping, ACF fields |
+| `src/Schema.php` | The data contract: every field, validation, the status rule |
+| `src/PostTypes.php` | Post types, the JWH Club taxonomy, ACF fields (from `Schema`) |
+| `src/Relations.php` | Division, company and manager links |
+| `src/Ingest/` | `Ingestor` (the only writer of records), `Jobs` (queue), `Photos`, `PhoneNumbers`, `Log` (audit table) |
+| `src/Api/` | `IngressController`, `ReadController`, `Signature`, `Problem` |
+| `src/Oracle/` | `Source` and `Adapter`: the development import |
+| `src/Admin/` | `SettingsPage` (Jobs, Logs, Photos), `Relationships` (boxes on the edit screens) |
+| `src/Cli/` | `club-import`, `oracle-import` |
+| `src/Upgrade.php` | One-off v1 → v2 data upgrade, run on first load |
 | `src/Phonelist.php`, `src/Staff.php` | Public theme API and the value object it returns |
-| `src/Sync/` | `OracleSource` (SELECTs), `Planner` (pure diff and log payloads), `Synchronizer` (runs a sync), `Photos` (photo folder → Media Library), `CompanyMap` (division → company mapping), `Log` (audit table, self-upgrading) |
-| `src/Admin/` | `SettingsPage` (Sync, Logs, Companies and Photos tabs), `Relationships` (boxes on the edit screens) |
-| `src/Cli/SyncCommand.php`, `src/Api/StaffController.php` | WP-CLI command, REST route |
 
-Tests: `ddev exec php -d zend.assertions=1 tests/plan-check.php`
+Tests:
+
+```bash
+ddev exec php -d zend.assertions=1 tests/plan-check.php                                            # pure PHP
+ddev exec php -d zend.assertions=1 /usr/local/bin/wp-cli --path=wp eval-file tests/wp-check.php    # inside WordPress
+bash tests/api-check.sh                                                                             # the REST API, end to end
+```
 
 ## Installing with Composer
 
@@ -221,28 +207,25 @@ In the site's `composer.json`:
         { "type": "vcs", "url": "https://github.com/constructivemedia/wp-plugins-intranet-phonelist.git" }
     ],
     "require": {
-        "constructivemedia/wp-plugins-intranet-phonelist": "^1.7.1"
+        "constructivemedia/wp-plugins-intranet-phonelist": "^2.0"
     }
 }
 ```
 
-The repository is private, so each site needs GitHub access: either a token (`composer config --global github-oauth.github.com <token>`), or an SSH key with `"url": "git@github.com:constructivemedia/wp-plugins-intranet-phonelist.git"`. Source installs (`--prefer-source`, a git clone) work the same as release zips.
-
-The package, and the folder it installs to (`wp-content/plugins/wp-plugins-intranet-phonelist/`), are named after the repository. Releases before `v1.7.1` were published as `constructivemedia/intranet-phonelist` and installed to `intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. Its one dependency, `giggsey/libphonenumber-for-php-lite`, is installed and autoloaded with the site. For a git clone or zip install, run `composer install --no-dev` in the plugin folder; the plugin loads its own `vendor/` when there is one. Without the library, phone numbers are stored as they come from Oracle and the sync logs a warning.
+The repository is private, so each site needs GitHub access: either a token (`composer config --global github-oauth.github.com <token>`), or an SSH key with `"url": "git@github.com:constructivemedia/wp-plugins-intranet-phonelist.git"`. The plugin installs to `wp-content/plugins/wp-plugins-intranet-phonelist/` (`composer/installers`). Its one dependency, libphonenumber, is installed and autoloaded with the site. For a git clone or zip install, run `composer install --no-dev` in the plugin folder.
 
 ## Releasing
 
 Composer reads versions from **git tags**, so `composer.json` has no `version` field.
 
 1. Bump `Version:` in `intranet-phonelist.php`.
-2. Commit, then tag with the same number and push: `git tag v1.1.2 && git push origin v1.1.2`.
+2. Commit, then tag with the same number and push: `git tag v2.0.1 && git push origin v2.0.1`.
 
-A constraint like `^1.1.2` then picks up `v1.1.2` and anything later below 2.0, so sites get new releases with `composer update`. No reactivation is needed: the log table upgrades itself on load. Release archives leave out `.ddev/`, `tests/` and the dev `wp-config.php` (see `.gitattributes`).
+Tables and data upgrade themselves on load. Release archives leave out `.ddev/`, `tests/` and the dev `wp-config.php` (see `.gitattributes`).
 
 ## Deploying
 
-Set the three `INTRANET_PHONELIST_ORACLE_*` constants (and `INTRANET_PHONELIST_PHOTOS_DIR`) in the production `wp-config.php`, install `oci8` on the server, activate the plugin, enter the company mapping under **Settings → Phonelist → Companies**, and add the nightly cron.
-
-Run the **first** sync with `wp phonelist sync` (as the web server's user) so you can watch it. It creates every post, and with photos it can take a few minutes. Later syncs only touch what changed and take a few seconds.
-
-The **Phonelist** admin area is for administrators only (`manage_options`), because staff records hold HR data. Staff and divisions can't be added or deleted by hand; the sync manages them. They can still be opened and edited (e.g. a division's **Company**).
+1. **Constants:** set `INTRANET_PHONELIST_API_SECRET` in the production `wp-config.php`, shared with JWH IT and never stored in the database. Set `INTRANET_PHONELIST_PHOTOS_DIR` if you use a photo folder. Leave the Oracle constants out.
+2. **Install:** run `composer update`, then activate the plugin. Coming from v1, the first load upgrades the existing records in place, keeping their photos, club levels and division companies.
+3. **Cron:** add the system cron line for WP-Cron (see **How data gets in**).
+4. **Data:** ask Data Hub for a full snapshot of each type (divisions, then staff), and check the Jobs tab.

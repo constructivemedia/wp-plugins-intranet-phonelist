@@ -1,0 +1,465 @@
+openapi: 3.1.0
+info:
+  title: JWH Intranet Phonelist API
+  version: 2.0.0
+  summary: Push companies, divisions and staff from Data Hub into the JWH intranet phone list.
+  license:
+    name: Proprietary
+    identifier: LicenseRef-Proprietary
+  description: |
+    Data Hub is the source of truth for companies, divisions and staff. It pushes changes here as they happen
+    (single records or batches) and sends a full snapshot of each type on a schedule.
+
+    - Records are identified only by their **Data Hub ID** (`id`).
+    - Every record carries `updated_at`; anything older than what is stored is refused with `409`.
+    - All write requests are signed (see `PhonelistSignature`).
+    - Errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) Problem Details.
+
+    See `docs/integration-guide.md` for how to use each endpoint.
+servers:
+  - url: https://{host}/wp-json/phonelist/v2
+    variables:
+      host:
+        default: intranet.example.com
+security:
+  - PhonelistSignature: []
+
+paths:
+  /{type}/{id}:
+    parameters:
+      - $ref: '#/components/parameters/Type'
+      - $ref: '#/components/parameters/Id'
+    put:
+      operationId: putRecord
+      summary: Create or replace one record
+      description: Fields that are not sent are cleared. Unknown fields are ignored.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              oneOf:
+                - $ref: '#/components/schemas/Company'
+                - $ref: '#/components/schemas/Division'
+                - $ref: '#/components/schemas/Staff'
+            examples:
+              staff:
+                value:
+                  id: '10423'
+                  updated_at: '2026-10-15T09:30:00+08:00'
+                  first_name: Jane
+                  last_name: Citizen
+                  preferred_name: Janey
+                  email: jane.citizen@jwh.com.au
+                  mobile: '+61437793226'
+                  position: Estimator
+                  division_id: JWH
+                  reports_to: '10007'
+                  status: active
+                  date_of_birth: '1985-09-05'
+                  hide_birthday: false
+      responses:
+        '200': { $ref: '#/components/responses/Result' }
+        '201': { $ref: '#/components/responses/Result' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+        '503': { $ref: '#/components/responses/Problem' }
+    patch:
+      operationId: patchRecord
+      summary: Change some fields of an existing record
+      description: Only the fields sent change; `null` clears a field. `updated_at` is required. The record must exist.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [updated_at]
+              properties:
+                updated_at: { $ref: '#/components/schemas/UpdatedAt' }
+              additionalProperties: true
+            example:
+              updated_at: '2026-10-15T10:00:00+08:00'
+              position: Senior Estimator
+              on_leave_until: '2026-11-01'
+      responses:
+        '200': { $ref: '#/components/responses/Result' }
+        '400': { $ref: '#/components/responses/Problem' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+    delete:
+      operationId: deleteRecord
+      summary: Remove a record
+      description: |
+        `updated_at` is required, in the JSON body or the query string (URL-encode `+` as `%2B`).
+        Deleting a record that is already gone also returns `204`.
+      parameters:
+        - name: updated_at
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/UpdatedAt' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                updated_at: { $ref: '#/components/schemas/UpdatedAt' }
+      responses:
+        '204': { description: 'Deleted, or already gone.' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '409': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: getRecord
+      summary: Read one record as stored
+      description: Private fields (`date_of_birth`, `home_phone`) are returned to signed requests only.
+      security:
+        - PhonelistSignature: []
+        - WordPressUser: []
+      responses:
+        '200':
+          description: The record.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/Company'
+                  - $ref: '#/components/schemas/Division'
+                  - $ref: '#/components/schemas/Staff'
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /{type}:
+    parameters:
+      - $ref: '#/components/parameters/Type'
+    put:
+      operationId: putSnapshot
+      summary: Full snapshot of one type
+      description: |
+        Every record of the type that should exist. Each record is upserted; records of this type that we hold with a
+        Data Hub ID but that are not in the snapshot are deleted (unless they were updated after the snapshot's newest
+        `updated_at`). Processed in the background: the reply is a job.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [records]
+              properties:
+                records:
+                  type: array
+                  minItems: 1
+                  maxItems: 5000
+                  items:
+                    oneOf:
+                      - $ref: '#/components/schemas/Company'
+                      - $ref: '#/components/schemas/Division'
+                      - $ref: '#/components/schemas/Staff'
+      responses:
+        '200': { $ref: '#/components/responses/JobAccepted' }
+        '202': { $ref: '#/components/responses/JobAccepted' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+    get:
+      operationId: listRecords
+      summary: Read every record of one type
+      security:
+        - PhonelistSignature: []
+        - WordPressUser: []
+      parameters:
+        - { name: name, in: query, description: 'Staff only: any word of the name starts with this (case-insensitive).', schema: { type: string } }
+        - { name: division_id, in: query, description: 'Staff only: exact division ID.', schema: { type: string } }
+        - { name: department_code, in: query, description: 'Staff only: exact department code.', schema: { type: string } }
+      responses:
+        '200':
+          description: All records, sorted by name.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  oneOf:
+                    - $ref: '#/components/schemas/Company'
+                    - $ref: '#/components/schemas/Division'
+                    - $ref: '#/components/schemas/Staff'
+        '401': { $ref: '#/components/responses/Problem' }
+
+  /batch:
+    post:
+      operationId: postBatch
+      summary: Up to 500 operations in one request
+      description: Processed in the background, in order. Each operation succeeds or fails on its own.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [operations]
+              properties:
+                operations:
+                  type: array
+                  minItems: 1
+                  maxItems: 500
+                  items: { $ref: '#/components/schemas/Operation' }
+            example:
+              operations:
+                - { op: put, type: divisions, id: BNB, data: { updated_at: '2026-10-15T09:30:00+08:00', name: 'WA Country Builders (Bunbury)' } }
+                - { op: patch, type: staff, id: '10423', data: { updated_at: '2026-10-15T09:30:00+08:00', division_id: BNB } }
+                - { op: delete, type: staff, id: '10099', data: { updated_at: '2026-10-15T09:30:00+08:00' } }
+      responses:
+        '200': { $ref: '#/components/responses/JobAccepted' }
+        '202': { $ref: '#/components/responses/JobAccepted' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '413': { $ref: '#/components/responses/Problem' }
+        '422': { $ref: '#/components/responses/Problem' }
+
+  /jobs/{id}:
+    get:
+      operationId: getJob
+      summary: A batch or snapshot's progress and results
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Job' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
+  /club:
+    get:
+      operationId: getClub
+      summary: The JWH Club page, levels in order with their members
+      security:
+        - PhonelistSignature: []
+        - WordPressUser: []
+      responses:
+        '200':
+          description: Levels with at least one member.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    level: { type: string, examples: ['40-year-club'] }
+                    title: { type: string, examples: ['40 Year Club'] }
+                    description: { type: string }
+                    logo: { type: [string, 'null'], format: uri }
+                    members: { type: array, items: { type: object } }
+        '401': { $ref: '#/components/responses/Problem' }
+
+components:
+  securitySchemes:
+    PhonelistSignature:
+      type: apiKey
+      in: header
+      name: X-Phonelist-Signature
+      description: |
+        `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw request body>" keyed with the shared secret>`.
+        For requests with no body, sign the empty string. `t` must be within 300 seconds of our clock.
+    WordPressUser:
+      type: http
+      scheme: basic
+      description: A logged-in WordPress user (cookie + X-WP-Nonce on the intranet, or an Application Password).
+
+  parameters:
+    Type:
+      name: type
+      in: path
+      required: true
+      schema: { type: string, enum: [companies, divisions, staff] }
+    Id:
+      name: id
+      in: path
+      required: true
+      description: The Data Hub ID (1–64 characters).
+      schema: { type: string, minLength: 1, maxLength: 64 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: Repeating a request with the same key returns the original job instead of creating another (up to 100 characters).
+      schema: { type: string, maxLength: 100 }
+
+  responses:
+    Result:
+      description: What happened to the record.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              result: { type: string, enum: [created, updated, unchanged, deleted] }
+              message: { type: string }
+    JobAccepted:
+      description: '`202` for a new job (with a `Location` header), `200` for a repeated `Idempotency-Key`.'
+      headers:
+        Location:
+          schema: { type: string, format: uri }
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              job: { type: string, format: uuid }
+              status: { type: string, enum: [queued, running, done, failed] }
+              links:
+                type: object
+                properties:
+                  self: { type: string, format: uri }
+    Problem:
+      description: Problem Details (RFC 9457).
+      content:
+        application/problem+json:
+          schema: { $ref: '#/components/schemas/Problem' }
+          example:
+            type: about:blank#validation
+            title: Invalid record
+            status: 422
+            detail: ''
+            errors:
+              - { field: last_name, message: Required. }
+
+  schemas:
+    UpdatedAt:
+      type: string
+      format: date-time
+      description: ISO 8601 with a timezone offset (or Z), e.g. 2026-10-15T09:30:00+08:00.
+    Date:
+      type: [string, 'null']
+      format: date
+      description: YYYY-MM-DD.
+    Text:
+      type: [string, 'null']
+      maxLength: 1000
+    Phone:
+      type: [string, 'null']
+      description: Any format; stored as E.164 (+61…). Numbers we can't read are kept as sent.
+
+    Company:
+      type: object
+      required: [id, updated_at, name]
+      properties:
+        id: { type: string, maxLength: 64 }
+        updated_at: { $ref: '#/components/schemas/UpdatedAt' }
+        name: { type: string }
+
+    Division:
+      type: object
+      description: Which company a division belongs to is set in the intranet, not by Data Hub.
+      required: [id, updated_at, name]
+      properties:
+        id: { type: string, maxLength: 64 }
+        updated_at: { $ref: '#/components/schemas/UpdatedAt' }
+        name: { type: string, description: 'As it should be shown, e.g. "WA Country Builders (Bunbury)".' }
+        phone: { $ref: '#/components/schemas/Phone' }
+        address_line1: { $ref: '#/components/schemas/Text' }
+        address_line2: { $ref: '#/components/schemas/Text' }
+        postcode: { $ref: '#/components/schemas/Text' }
+        postal_address: { $ref: '#/components/schemas/Text' }
+
+    Staff:
+      type: object
+      required: [id, updated_at, first_name, last_name, status]
+      properties:
+        id: { type: string, maxLength: 64 }
+        updated_at: { $ref: '#/components/schemas/UpdatedAt' }
+        first_name: { type: string }
+        last_name: { type: string }
+        preferred_name: { $ref: '#/components/schemas/Text' }
+        email: { type: [string, 'null'], format: email }
+        mobile: { $ref: '#/components/schemas/Phone' }
+        phone: { $ref: '#/components/schemas/Phone', description: Direct phone number. }
+        extension: { $ref: '#/components/schemas/Text', description: VoIP extension. }
+        home_phone: { $ref: '#/components/schemas/Phone', description: 'Private. Also used for after-hours numbers.' }
+        position: { $ref: '#/components/schemas/Text' }
+        position_number: { $ref: '#/components/schemas/Text' }
+        job: { $ref: '#/components/schemas/Text' }
+        job_type: { $ref: '#/components/schemas/Text' }
+        award_code: { $ref: '#/components/schemas/Text' }
+        department_code: { $ref: '#/components/schemas/Text' }
+        department: { $ref: '#/components/schemas/Text' }
+        division_id: { $ref: '#/components/schemas/Text', description: The division's Data Hub ID. }
+        company_id: { $ref: '#/components/schemas/Text', description: Stored as sent; the company shown comes from the division. }
+        reports_to: { $ref: '#/components/schemas/Text', description: "The manager's staff id." }
+        status:
+          type: string
+          description: '`active` stays on the phone list; any other value removes the person. The list of values is being finalised.'
+          examples: [active, terminated]
+        start_date: { $ref: '#/components/schemas/Date' }
+        on_leave_until: { $ref: '#/components/schemas/Date' }
+        date_of_birth: { $ref: '#/components/schemas/Date', description: Private. }
+        hide_birthday: { type: [boolean, 'null'] }
+        photo_url: { type: [string, 'null'], format: uri, description: 'http(s) URL of their photo. Downloaded when it changes.' }
+
+    Operation:
+      type: object
+      required: [op, type, id, data]
+      properties:
+        op: { type: string, enum: [put, patch, delete] }
+        type: { type: string, enum: [companies, divisions, staff] }
+        id: { type: string, maxLength: 64 }
+        data:
+          type: object
+          description: The record (put), the changed fields (patch) or just updated_at (delete). Always includes updated_at.
+
+    Job:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        kind: { type: string, enum: [batch, snapshot] }
+        type: { type: [string, 'null'], enum: [companies, divisions, staff, null] }
+        status: { type: string, enum: [queued, running, done, failed] }
+        total: { type: integer }
+        done: { type: integer }
+        error: { type: [string, 'null'] }
+        created_at: { type: string, description: UTC. }
+        finished_at: { type: [string, 'null'], description: UTC. }
+        results:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: [string, 'null'] }
+              type: { type: [string, 'null'] }
+              op: { type: [string, 'null'] }
+              result: { type: string, enum: [created, updated, unchanged, deleted, stale, invalid, not_found, error] }
+              message: { type: string }
+              errors:
+                type: array
+                items: { $ref: '#/components/schemas/FieldError' }
+
+    FieldError:
+      type: object
+      properties:
+        field: { type: string }
+        message: { type: string }
+
+    Problem:
+      type: object
+      properties:
+        type: { type: string, description: '`about:blank`, or `about:blank#validation` when `errors` is present.' }
+        title: { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        errors:
+          type: array
+          items: { $ref: '#/components/schemas/FieldError' }

@@ -6,4 +6,5 @@
 /.env
 /oracle-access-review.md
 /assets/
-/docs/
+/docs/superpowers/
+/docs/design.md
