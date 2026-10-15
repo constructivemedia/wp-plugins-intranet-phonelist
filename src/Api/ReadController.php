@@ -89,11 +89,12 @@ final class ReadController
     public function team(WP_REST_Request $request): WP_REST_Response
     {
         $id = $request->get_url_params()['id'];
-        if (!PostTypes::postId(PostTypes::STAFF, $id)) {
+        $postId = PostTypes::postId(PostTypes::STAFF, $id);
+        if (!$postId) {
             return Problem::response(404, 'Not found', 'No record with this ID.');
         }
         $signed = self::signed($request);
-        $posts = get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC', 'meta_key' => 'reports_to', 'meta_value' => $id]);
+        $posts = get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC', 'meta_key' => 'reports_to', 'meta_value' => $id, 'post__not_in' => [$postId]]);
 
         return new WP_REST_Response(array_map(fn (WP_Post $post): array => self::record('staff', $post, $signed), $posts));
     }

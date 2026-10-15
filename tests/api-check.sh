@@ -16,6 +16,8 @@ remove_records() {
     ids=$(ddev wp post list --post_type=iphl_company --title='Test Api Division' --format=ids 2>/dev/null)
     [ -n "$ids" ] && ddev wp post delete $ids --force >/dev/null 2>&1
     ddev wp db query "DELETE FROM wp_iphl_jobs WHERE idempotency_key LIKE 'test-api-%' OR payload LIKE '%test-api-%'" >/dev/null 2>&1
+    # Forget the test records' deletions, so the next run can create them again.
+    ddev wp eval 'update_option("intranet_phonelist_deleted", array_filter(get_option("intranet_phonelist_deleted", []), fn ($key) => !str_contains($key, ":test-api-"), ARRAY_FILTER_USE_KEY), false);' >/dev/null 2>&1
 }
 cleanup() {
     remove_records
@@ -86,8 +88,9 @@ expect "GET signed" 200 "$(request GET /staff/test-api-1 '' signed)"
 has "private fields shown to signed requests" '"date_of_birth":"1985-09-05"'
 expect "GET list filtered by name" 200 "$(request GET '/staff?name=jane%20ap' '' app)"
 has "list finds the record" '"id":"test-api-1"'
+expect "a report" 201 "$(request PUT /staff/test-api-2 "{\"first_name\":\"Rae\",\"last_name\":\"Api\",\"status\":\"active\",\"reports_to\":\"test-api-1\",\"updated_at\":\"$T1\"}" signed)"
 expect "a manager's team" 200 "$(request GET /staff/test-api-1/team '' app)"
-has "team is a list" '^\['
+has "team lists the report" '"id":"test-api-2"'
 expect "team of an unknown person" 404 "$(request GET /staff/test-api-nope/team '' app)"
 expect "empty snapshot is refused" 422 "$(request PUT /staff '{"records":[]}' signed)"
 expect "batch is accepted" 202 "$(request POST /batch "{\"operations\":[{\"op\":\"put\",\"type\":\"divisions\",\"id\":\"test-api-D\",\"data\":{\"name\":\"Test Api Division\",\"updated_at\":\"$T1\"}},{\"op\":\"patch\",\"type\":\"staff\",\"id\":\"test-api-1\",\"data\":{\"division_id\":\"test-api-D\",\"updated_at\":\"$T2\"}}]}" signed -H "Idempotency-Key: $KEY")"
@@ -97,7 +100,8 @@ has "same job id" "\"job\":\"$JOB\""
 sleep 3
 expect "job status" 200 "$(request GET "/jobs/$JOB" '' signed)"
 has "job is done" '"status":"done"'
-has "both items applied" '"result":"updated"'
+has "the division was created" '"type":"divisions","op":"put","result":"created"'
+has "the staff member was updated" '"type":"staff","op":"patch","result":"updated"'
 expect "companies list" 200 "$(request GET /companies '' app)"
 has "lists companies WordPress created, with no Data Hub ID" '"id":null,"updated_at":null,"name":"Test Api Division"'
 expect "job status needs a signature" 401 "$(request GET "/jobs/$JOB" '' tampered)"

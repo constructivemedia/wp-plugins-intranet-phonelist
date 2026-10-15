@@ -66,6 +66,7 @@ paths:
         '409': { $ref: '#/components/responses/Problem' }
         '413': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
         '503': { $ref: '#/components/responses/Problem' }
     patch:
       operationId: patchRecord
@@ -92,6 +93,7 @@ paths:
         '404': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
+        '500': { $ref: '#/components/responses/Problem' }
     delete:
       operationId: deleteRecord
       summary: Remove a record
@@ -113,6 +115,7 @@ paths:
                 updated_at: { $ref: '#/components/schemas/UpdatedAt' }
       responses:
         '204': { description: 'Deleted, or already gone.' }
+        '400': { $ref: '#/components/responses/Problem' }
         '401': { $ref: '#/components/responses/Problem' }
         '409': { $ref: '#/components/responses/Problem' }
         '422': { $ref: '#/components/responses/Problem' }
@@ -434,7 +437,7 @@ components:
           description: '`active` stays on the phone list; `inactive` removes the person (as a DELETE would). Anything else is refused with 422.'
           enum: [active, inactive]
         start_date: { $ref: '#/components/schemas/Date' }
-        on_leave_until: { $ref: '#/components/schemas/Date' }
+        on_leave_until: { $ref: '#/components/schemas/Date', description: The last day of their current leave; null when not on leave. }
         date_of_birth: { $ref: '#/components/schemas/Date', description: Private. }
         hide_birthday: { type: [boolean, 'null'] }
         photo_url: { type: [string, 'null'], format: uri, description: 'http(s) URL of their photo. Downloaded when it changes.' }

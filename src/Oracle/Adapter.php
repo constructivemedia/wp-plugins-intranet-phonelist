@@ -90,24 +90,30 @@ final class Adapter
             fn (array $division): bool => isset($staffed[$division['id']]),
         ));
 
-        // New divisions get their company from the list above instead of one named after them.
-        $mapped = fn (string $name, string $id): string => self::companyFor($id) ?? $name;
-        add_filter('intranet_phonelist_new_division_company', $mapped, 10, 2);
-        try {
-            $results = [];
-            foreach (['divisions' => $divisions, 'staff' => $staff] as $type => $records) {
-                $progress(sprintf('Importing %d %s…', count($records), $type));
-                $job = $this->jobs->create('snapshot', $type, $records, null, $trigger);
-                if (!$this->jobs->process($job['id'])) {
-                    throw new RuntimeException("Another job is running, so the $type snapshot was queued (job {$job['id']}); it will run shortly.");
-                }
-                $results[$type] = $this->jobs->get($job['id'])['results'];
+        $results = [];
+        foreach (['divisions' => $divisions, 'staff' => $staff] as $type => $records) {
+            $progress(sprintf('Importing %d %s…', count($records), $type));
+            $job = $this->jobs->create('snapshot', $type, $records, null, $trigger);
+            if (!$this->jobs->process($job['id'])) {
+                throw new RuntimeException("Another job is running, so the $type snapshot was queued (job {$job['id']}); run the import again once it has finished.");
             }
-        } finally {
-            remove_filter('intranet_phonelist_new_division_company', $mapped, 10);
+            $job = $this->jobs->get($job['id']);
+            if ($job['status'] !== 'done') {
+                throw new RuntimeException("The $type snapshot (job {$job['id']}) didn't finish: " . ($job['error'] ?? $job['status']));
+            }
+            $results[$type] = $job['results'];
         }
 
         return $results;
+    }
+
+    /**
+     * New divisions get their company from COMPANIES instead of one named after them. Hooked whenever Oracle is
+     * configured, so a snapshot that ends up running later from the queue still gets it.
+     */
+    public static function mapCompanies(string $name, string $divisionId): string
+    {
+        return self::companyFor($divisionId) ?? $name;
     }
 
     /**

@@ -106,7 +106,7 @@ Phonelist::staff(name: 'jul');                         // any word of the name s
 Phonelist::staff(division: 'JWH', department: '20');   // exact division ID and department code
 
 Phonelist::anniversaries(days: 7);   // work anniversaries (whole years since start_date): ->anniversary, ->years, ->daysUntil
-Phonelist::onLeave();                // on leave now, soonest back first: ->onLeaveUntil
+Phonelist::onLeave();                // on leave (last day of leave is today or later), soonest back first: ->onLeaveUntil
 Phonelist::team('10007');            // who reports to staff 10007 (by Data Hub id), by name
 Phonelist::manager('10423');         // their manager, or null
 Phonelist::divisions();              // [['id', 'name', 'company', 'staff' => Staff[]], …] by name
@@ -151,7 +151,7 @@ add_filter('intranet_phonelist_club', function (array $club): array {
 - `position`, `email`, `mobile`, `phone` (direct), `extension` (VoIP)
 - `divisionId`, `division`, `company`, `reportsTo` (their manager's staff id)
 - `departmentCode`, `department`
-- `onLeaveUntil` (a date, or null when not on leave)
+- `onLeaveUntil` (the last day of their leave, or null when not on leave)
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
 - `club` (the level's slug: `'lifetime-club'`, `'40-year-club'` …, or null)
 - `birthday`, `daysUntil` (from `birthdays()`); `anniversary`, `years`, `daysUntil` (from `anniversaries()`)

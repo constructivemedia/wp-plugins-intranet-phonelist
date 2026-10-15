@@ -114,7 +114,7 @@ foreach (array_keys(Schema::TYPES) as $type) {
     assert(array_filter($rows) === [], "$type has an unfinished row");
 }
 
-// Request signatures: HMAC-SHA256 over "<t>.<raw body>", 5-minute window.
+// Request signatures: HMAC-SHA256 over "<t>.<METHOD>.<path>.<raw body>", 5-minute window.
 $secret = 'test-secret'; $body = '{"id":"S1","name":"A"}'; $now = 1_760_000_000;
 $path = '/wp-json/phonelist/v2/staff/S1';
 $header = Signature::sign('PUT', $path, $body, $secret, $now);

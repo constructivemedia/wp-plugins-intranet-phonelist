@@ -14,6 +14,7 @@ use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
+use Throwable;
 
 /**
  * Wires the plugin into WordPress: the one place its services are built and hooked up.
@@ -82,9 +83,16 @@ final class Plugin
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
         }
 
-        add_action(self::ORACLE_HOOK, function (int $userId = 0) use ($oracle): void {
+        if (Adapter::configured()) {
+            add_filter('intranet_phonelist_new_division_company', [Adapter::class, 'mapCompanies'], 10, 2);
+        }
+        add_action(self::ORACLE_HOOK, function (int $userId = 0) use ($oracle, $log): void {
             wp_set_current_user($userId); // Logged as the user who clicked Import.
-            $oracle->run(null, 'manual', fn () => null);
+            try {
+                $oracle->run(null, 'manual', fn () => null);
+            } catch (Throwable $e) {
+                $log->write(wp_generate_uuid4(), 'manual', 'error', 'oracle_error', null, null, 'Oracle import', $e->getMessage());
+            }
         });
 
         if (is_admin()) {

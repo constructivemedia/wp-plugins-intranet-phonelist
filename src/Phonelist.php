@@ -147,7 +147,7 @@ final class Phonelist
     }
 
     /**
-     * Staff on leave (their return date is still ahead), soonest back first.
+     * Staff on leave (on_leave_until, their last day of leave, is today or later), soonest back first.
      *
      * @return Staff[]
      */
@@ -166,7 +166,7 @@ final class Phonelist
      */
     public static function team(string $id): array
     {
-        return array_values(array_filter(self::staff(), fn (Staff $person): bool => $person->reportsTo === $id));
+        return $id === '' ? [] : array_values(array_filter(self::staff(), fn (Staff $person): bool => $person->reportsTo === $id));
     }
 
     /**
@@ -180,7 +180,7 @@ final class Phonelist
     }
 
     /**
-     * Every division, sorted by name: ['id' (Data Hub id, or null), 'name', 'company', 'staff' => Staff[]].
+     * Every division, sorted by name: ['id' (Data Hub id, or null), 'postId', 'name', 'company', 'staff' => Staff[]].
      */
     public static function divisions(): array
     {
@@ -193,7 +193,7 @@ final class Phonelist
             $id = (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true);
             $company = (int) get_post_meta($post->ID, 'company', true);
 
-            return ['id' => $id ?: null, 'name' => $post->post_title, 'company' => $company ? get_post_field('post_title', $company, 'raw') : '', 'staff' => $staff[$id] ?? []];
+            return ['id' => $id ?: null, 'postId' => $post->ID, 'name' => $post->post_title, 'company' => $company ? get_post_field('post_title', $company, 'raw') : '', 'staff' => $staff[$id] ?? []];
         }, get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
     }
 
@@ -205,7 +205,7 @@ final class Phonelist
         $divisions = self::divisions();
 
         return array_map(function (WP_Post $post) use ($divisions): array {
-            $theirs = array_values(array_filter($divisions, fn (array $division): bool => $division['company'] === $post->post_title));
+            $theirs = array_values(array_filter($divisions, fn (array $division): bool => (int) get_post_meta($division['postId'], 'company', true) === $post->ID));
             $staff = array_merge(...array_column($theirs, 'staff'));
             usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
 
@@ -280,7 +280,7 @@ final class Phonelist
             company: $title('company'),
             departmentCode: $meta('department_code'),
             department: $meta('department'),
-            reportsTo: $meta('reports_to'),
+            reportsTo: $meta('reports_to') === $meta(PostTypes::SOURCE_ID) ? '' : $meta('reports_to'), // Never their own manager.
             onLeaveUntil: $leave && $leave >= new DateTimeImmutable('today', wp_timezone()) ? $leave : null,
             birthday: $birthday,
             daysUntil: $daysUntil,

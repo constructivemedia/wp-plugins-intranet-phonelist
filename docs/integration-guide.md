@@ -147,7 +147,7 @@ Location: https://…/wp-json/phonelist/v2/jobs/3dd928bf-…
 {"job":"3dd928bf-…","status":"queued","links":{"self":"https://…/jobs/3dd928bf-…"}}
 ```
 
-Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one entry per item (`created`, `updated`, `unchanged`, `deleted`, `stale`, `invalid`, `not_found`, `error`), with `errors` for invalid ones. Jobs run one at a time, in the order they arrived. Their results are kept for 30 days.
+Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one entry per item (`created`, `updated`, `unchanged`, `deleted`, `stale`, `invalid`, `not_found`, `error`), with `errors` for invalid ones. Jobs run one at a time, in the order they arrived (to the second: two sent within the same second may run in either order). Their results are kept for 30 days.
 
 **Retries:**
 - **Single records:** safe to resend as they are. A repeat with the same `updated_at` is `unchanged`, and an older one is `409`.
@@ -194,7 +194,8 @@ Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one e
 | `division_id` | string | The division's `id` |
 | `company_id` | string | Stored as sent; the company shown comes from the division |
 | `reports_to` | string | The manager's staff `id` |
-| `start_date`, `on_leave_until` | date | `YYYY-MM-DD` |
+| `start_date` | date | `YYYY-MM-DD` |
+| `on_leave_until` | date | The last day of their current leave (`YYYY-MM-DD`); `null` when not on leave |
 | `date_of_birth` | date | Private: only the day and month are used (birthdays) |
 | `hide_birthday` | boolean | |
 | `photo_url` | URL | `http(s)`. Downloaded when it changes; the same URL isn't fetched twice. |

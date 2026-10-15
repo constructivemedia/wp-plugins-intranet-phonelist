@@ -98,6 +98,11 @@ try {
     assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t2], 'test-run', 'api')->status === 409);       // ...and for one at the same time: a delete wins ties
     $in->delete('staff', 'test-gone', $t2, 'test-run', 'api');                                                       // never held: still remembered
     assert($in->put('staff', 'test-gone', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);
+    $in->delete('staff', 'test-gone', $t0, 'test-run', 'api');                                                       // a late, older delete...
+    assert($in->put('staff', 'test-gone', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);       // ...doesn't weaken the newer one
+    $longId = 'test-' . str_repeat('x', 70);
+    $in->apply(['op' => 'put', 'type' => 'staff', 'id' => $longId, 'data' => []], 'test-run', 'api');
+    assert((int) $wpdb->get_var("SELECT COUNT(*) FROM $logTable WHERE source_id LIKE 'test-xxxx%'") === 1);         // an over-long id still gets its log row
     $in->put('staff', 'test-left', ['status' => 'inactive'] + $jane + ['updated_at' => $t2], 'test-run', 'api'); // a leaver we never held: remembered too
     assert($in->put('staff', 'test-left', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);
     $t3 = '2026-10-15T11:00:00+08:00';
@@ -210,6 +215,8 @@ try {
     assert(array_map(fn ($person) => $person->id, Phonelist::team('test-o1')) === ['test-o2', 'test-o3']);
     assert(Phonelist::manager('test-o2')?->id === 'test-o1' && Phonelist::manager('test-o1') === null && Phonelist::team('test-nobody') === []);
     assert(Phonelist::staff(name: 'Ava Testerson')[0]->reportsTo === 'test-o1');
+    $in->put('staff', 'test-o4', ['first_name' => 'Cee', 'last_name' => 'Testerson', 'reports_to' => 'test-o4'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    assert(Phonelist::manager('test-o4') === null && Phonelist::team('test-o4') === [] && Phonelist::team('') === []); // never their own manager
 
     // Divisions and companies, with their staff.
     $in->put('divisions', 'test-LD', ['name' => 'Test Listing Division', 'updated_at' => $t1], 'test-run', 'api');
@@ -218,6 +225,10 @@ try {
     assert($division['name'] === 'Test Listing Division' && $division['company'] === 'Test Listing Division' && array_map(fn ($person) => $person->id, $division['staff']) === ['test-l1']);
     $company = current(array_filter(Phonelist::companies(), fn (array $company): bool => $company['name'] === 'Test Listing Division'));
     assert(array_column($company['divisions'], 'id') === ['test-LD'] && $company['staff'][0]->id === 'test-l1');
+    $in->put('companies', 'test-LC', ['name' => 'Test Listing Division', 'updated_at' => $t1], 'test-run', 'api'); // a second company with the same name
+    $withDivision = array_filter(Phonelist::companies(), fn (array $company): bool => in_array('test-LD', array_column($company['divisions'], 'id'), true));
+    assert(count($withDivision) === 1);                                                                    // the division belongs to one of them only
+    $in->delete('companies', 'test-LC', $t2, 'test-run', 'api');
 
     // Upgrade from v1: meta renamed in place (with ACF references), the position-based manager link becomes reports_to, idempotent.
     $v1 = fn (string $title, array $meta): int => wp_insert_post(['post_type' => PostTypes::STAFF, 'post_status' => 'publish', 'post_title' => $title, 'meta_input' => $meta]);
@@ -262,7 +273,7 @@ try {
     $done = $jobs->get($job['id']);
     assert($done['status'] === 'done' && $done['total'] === 3 && $done['done'] === 3);
     assert(array_column($done['results'], 'result') === ['created', 'created', 'invalid']);
-    assert($link($in->postId('staff', 'test-b1'), 'division') === $in->postId('divisions', 'test-BD'));       // Review Focus 2
+    assert($link($in->postId('staff', 'test-b1'), 'division') === $in->postId('divisions', 'test-BD'));       // staff sent before their division
 
     $job2 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b2', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
     $wpdb->update($wpdb->prefix . 'iphl_jobs', ['status' => 'running', 'heartbeat' => gmdate('Y-m-d H:i:s', time() - 600)], ['id' => $job2['id']]);

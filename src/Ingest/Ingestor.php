@@ -57,7 +57,10 @@ final class Ingestor
             }
             $postId = $this->postId($type, $id);
             if (!$postId) {
-                $this->bury($type, $id, $updatedAt);
+                $deleted = $this->tombstone($type, $id);
+                if ($deleted === null || $time > $deleted) {
+                    $this->bury($type, $id, $updatedAt);
+                }
                 return new Outcome('deleted', 204, message: 'Already gone.');
             }
             if ($stale = $this->stale($postId, $time)) {

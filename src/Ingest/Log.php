@@ -80,7 +80,7 @@ final class Log
             'level' => $level,
             'action' => $action,
             'post_type' => $postType,
-            'source_id' => $sourceId,
+            'source_id' => $sourceId === null ? null : mb_substr($sourceId, 0, 64), // The column's size, as for label.
             'label' => mb_substr($label, 0, 255), // The column's size: a longer label would lose the whole row.
             'message' => $message,
             'context' => $context ? wp_json_encode($context) : null,
