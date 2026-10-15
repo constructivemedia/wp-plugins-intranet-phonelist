@@ -4,7 +4,7 @@ namespace ConstructiveMedia\IntranetPhonelist\Admin;
 
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
-use ConstructiveMedia\IntranetPhonelist\Sync\Log;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
 

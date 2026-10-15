@@ -14,59 +14,6 @@ use ConstructiveMedia\IntranetPhonelist\Schema;
 use ConstructiveMedia\IntranetPhonelist\Staff;
 use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
-use ConstructiveMedia\IntranetPhonelist\Sync\Planner;
-
-$row = fn ($id, $ext = '100', $name = 'A') => ['ID' => $id, 'PH_EXT' => $ext, 'FULL_NAME' => $name];
-$hash = fn ($r) => Planner::hash($r);
-$post = fn ($postId, $id, $h = 'x') => ['post_id' => $postId, 'source_id' => $id, 'hash' => $h];
-$ids = fn ($items) => array_map(fn ($i) => $i['row']['ID'] ?? $i['source_id'], array_values($items));
-
-// Full sync.
-$existing = [
-    '1' => $post(11, '1', $hash($row('1'))), // unchanged
-    '2' => $post(12, '2', 'stale'),          // changed
-    '3' => $post(13, '3'),                   // gone from Oracle
-    '4' => $post(14, '4'),                   // now LEFT
-];
-$plan = Planner::plan([$row('1'), $row('2', '200'), $row('4', 'LEFT'), $row('5'), $row('6', 'LEFT')], $existing, 'ID');
-assert($ids($plan['create']) === ['5']);
-assert($ids($plan['update']) === ['2'] && array_values($plan['update'])[0]['post_id'] === 12);
-assert($ids($plan['delete']) === ['3', '4']);
-assert(Planner::plan([], [], 'ID') === ['create' => [], 'update' => [], 'delete' => []]);
-
-// IDs are opaque strings: '00001', '1' and a UUID are all distinct and come back unchanged.
-$uuid = '0b7c6a3e-2f1d-4c5b-9a8e-7d6c5b4a3f21';
-$plan = Planner::plan([$row('00001'), $row('1'), $row($uuid)], ['00001' => $post(21, '00001', $hash($row('00001')))], 'ID');
-assert($ids($plan['create']) === ['1', $uuid]);
-assert($plan['update'] === [] && $plan['delete'] === []);
-
-// Single sync: existing is scoped to that one ID, so only they can be deleted.
-assert($ids(Planner::plan([], ['00001' => $post(21, '00001')], 'ID')['delete']) === ['00001']);
-assert($ids(Planner::plan([$row('00001', 'LEFT')], ['00001' => $post(21, '00001')], 'ID')['delete']) === ['00001']);
-
-// Only divisions with at least one current staff member; LEFT staff don't count; exact code match.
-$divisions = [['DIV_CODE' => 'JWH'], ['DIV_CODE' => 'OLD'], ['DIV_CODE' => 'GONE'], ['DIV_CODE' => '000']];
-$staff = [['DIV_CODE' => 'JWH', 'PH_EXT' => '1'], ['DIV_CODE' => 'GONE', 'PH_EXT' => 'LEFT'], ['DIV_CODE' => '0', 'PH_EXT' => '2']];
-assert(array_column(Planner::staffedDivisions($divisions, $staff), 'DIV_CODE') === ['JWH']);
-
-// Fingerprint ignores column order.
-assert(Planner::hash(['A' => '1', 'B' => '2']) === Planner::hash(['B' => '2', 'A' => '1']));
-assert(Planner::hash(['A' => '1']) !== Planner::hash(['A' => '2']));
-
-// Editor layout covers every synced column exactly once; each row's widths add up to 100.
-$expected = [PostTypes::DIVISION => 9, PostTypes::STAFF => 28];
-foreach (PostTypes::synced() as $type => $config) {
-    assert(count($config['columns']) === $expected[$type] && count(array_unique($config['columns'])) === $expected[$type]);
-    foreach ($config['fields'] as $tab => $columns) {
-        $row = 0;
-        foreach ($columns as [, $width]) {
-            $row += $width;
-            $row = $row === 100 ? 0 : $row;
-            assert($row < 100, "{$type}/{$tab} widths overflow a row");
-        }
-        assert($row === 0, "$type/$tab has an unfinished row");
-    }
-}
 
 // Division titles: title case, tidy brackets, known acronyms kept.
 foreach ([
@@ -80,27 +27,6 @@ foreach ([
 ] as $raw => $pretty) {
     assert(PostTypes::prettyName($raw) === $pretty, "$raw → " . PostTypes::prettyName($raw));
 }
-
-// Log payloads: field-level changes, and HR fields never logged by value.
-$changes = Planner::changes(['POSITION' => 'Estimator', 'DOB' => '19850905', 'EMAIL' => 'a@x'], ['POSITION' => 'Senior Estimator', 'DOB' => '19850906', 'EMAIL' => 'a@x']);
-assert($changes === ['POSITION' => ['from' => 'Estimator', 'to' => 'Senior Estimator'], 'DOB' => '(changed)']);
-assert(!str_contains(json_encode($changes), '1985'));
-assert(Planner::redact(['ID' => '1', 'DOB' => '19850905', 'HOME_PHONE' => '9999', 'EMAIL' => 'a@x']) === ['ID' => '1', 'EMAIL' => 'a@x']);
-$raw = ['DOB' => '31Feb85', 'START_DATE' => 'N/A', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '05Sep85'];
-$normalized = ['DOB' => '', 'START_DATE' => '', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '19850905'];
-assert(Planner::unreadable($raw, $normalized, array_fill_keys(array_keys($raw), PostTypes::DATE)) === ['DOB']); // 'N/A' and '' are empty on purpose
-
-// Other kinds: BOOL 'y' → '1', STATUS 'e' → 'active', PHONE in one format (unreadable kept as is, and reported).
-$kinds = ['HIDE_BIRTHDAY' => PostTypes::BOOL, 'E_STATUS' => PostTypes::STATUS, 'MOBILE_NO' => PostTypes::PHONE, 'PH_EXT' => PostTypes::PHONE];
-$typed = fn (array $row) => Planner::normalize($row, $kinds, new DateTimeImmutable('2026-10-13'));
-$row = $typed(['HIDE_BIRTHDAY' => 'y', 'E_STATUS' => 'e', 'MOBILE_NO' => '0437793226', 'PH_EXT' => '(08) 94647800']);
-assert($row === ['HIDE_BIRTHDAY' => '1', 'E_STATUS' => 'active', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '+61894647800']);
-$row = $typed(['HIDE_BIRTHDAY' => ' ', 'E_STATUS' => 'xcon', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '9464 7800']);
-assert($row === ['HIDE_BIRTHDAY' => '0', 'E_STATUS' => 'inactive', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '+61894647800']); // no area code → 08
-assert($typed(['HIDE_BIRTHDAY' => 'Y', 'E_STATUS' => 'E', 'MOBILE_NO' => '', 'PH_EXT' => ''])['HIDE_BIRTHDAY'] === '1');
-$raw = ['HIDE_BIRTHDAY' => '', 'E_STATUS' => '', 'MOBILE_NO' => '0894647800 - Bunbury', 'PH_EXT' => ''];
-assert($typed($raw)['MOBILE_NO'] === '0894647800 - Bunbury');                                       // unreadable: kept as it was
-assert(Planner::unreadable($raw, $typed($raw), $kinds) === ['MOBILE_NO']);                          // ...and reported
 
 // Company mapping: one company per line, codes split by commas/spaces, blank lines ignored, round-trips.
 $map = CompanyMap::parse("WA Country Builders: GTN, BSN,BNB  ALB\n\nJWH Group: JWH, JIT\nJWH Group: JIT, CME\nNo Codes Yet:\n");
@@ -134,29 +60,6 @@ assert(Photos::fileKey('Jane_Citizen_JWH.JPEG') === 'jane_citizen_jwh');
 assert(Photos::fileKey('jane_citizen_jwh.jpg.jpg') === 'jane_citizen_jwh');
 assert(Photos::fileKey('Jane Citizen_WACB.jpg') === 'jane_citizen_wacb');
 assert(Photos::fileKey('notes.txt') === null && Photos::fileKey('.jpg') === null);
-
-// Staff title: preferred name, else first name, then surname.
-$title = PostTypes::synced()[PostTypes::STAFF]['title'];
-assert($title(['PREF_NAME' => 'Janey', 'NAME_FIRST' => 'Jane', 'NAME_LAST_CO' => 'Citizen']) === 'Janey Citizen');
-assert($title(['PREF_NAME' => ' ', 'NAME_FIRST' => 'Jane', 'NAME_LAST_CO' => 'Citizen']) === 'Jane Citizen');
-
-// Oracle dates → ACF Ymd, once at sync. Birth dates never land in the future; other dates keep PHP's 1970–2069 window.
-$dates = ['DOB' => PostTypes::BIRTH_DATE, 'START_DATE' => PostTypes::DATE];
-$normalize = fn ($dob, $start = '') => Planner::normalize(['DOB' => $dob, 'START_DATE' => $start, 'ID' => '1'], $dates, new DateTimeImmutable('2026-10-13'));
-assert($normalize('05Sep85')['DOB'] === '19850905');
-assert($normalize('05sep85')['DOB'] === '19850905');                 // month case varies in Oracle
-assert($normalize('15Jun65')['DOB'] === '19650615');                 // PHP alone would say 2065
-assert($normalize('15Jun05')['DOB'] === '20050615');
-assert($normalize('13Oct26')['DOB'] === '20261013');                 // today is not the future
-assert($normalize('14Oct26')['DOB'] === '19261014');
-assert($normalize('29Feb88')['DOB'] === '19880229');
-assert($normalize('31Feb85')['DOB'] === '' && $normalize('')['DOB'] === '' && $normalize('garbage')['DOB'] === '');
-assert($normalize('05Sep85', '01Apr27')['START_DATE'] === '20270401'); // future start dates stay future
-assert($normalize('05Sep85', '01dec25')['START_DATE'] === '20251201');
-assert($normalize('05Sep85')['ID'] === '1');                          // other columns untouched
-assert($normalize('05Sep85', '20261020')['START_DATE'] === '20261020'); // real Oracle DATE columns arrive as Ymd already
-assert($normalize('19650615')['DOB'] === '19650615');                 // full year: no century guessing
-assert($normalize('05Sep85', '20260231')['START_DATE'] === '');        // impossible Ymd
 
 // Next birthday from stored Ymd: year of birth ignored, wraps into next year, 29 Feb → 28 Feb in non-leap years.
 $next = fn ($dob, $today) => Phonelist::nextBirthday($dob, new DateTimeImmutable($today))?->format('Y-m-d');

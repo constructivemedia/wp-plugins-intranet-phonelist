@@ -1,18 +1,23 @@
 <?php
 
-namespace ConstructiveMedia\IntranetPhonelist\Sync;
+namespace ConstructiveMedia\IntranetPhonelist\Ingest;
 
 use wpdb;
 
 /**
- * Audit log table: every sync event with a level and an optional JSON payload. Kept until deleted in settings.
+ * Audit log table: every request and record outcome, with a level and an optional JSON payload.
+ * Entries older than days() are pruned daily.
  */
 final class Log
 {
     public const LEVELS = ['error', 'warning', 'notice', 'info', 'debug'];
 
+    private const DEFAULT_DAYS = 90;
+    /** Rows deleted per query when pruning, so the table is never locked for long. */
+    private const PRUNE_CHUNK = 1000;
+
     /** Bump when the table changes; the table is upgraded on the next load. */
-    private const SCHEMA = '3';
+    private const SCHEMA = '4';
     private const SCHEMA_OPTION = 'intranet_phonelist_log_schema';
 
     private readonly string $table;
@@ -42,7 +47,8 @@ final class Log
             KEY run_id (run_id),
             KEY created_at (created_at),
             KEY level (level),
-            KEY action (action)
+            KEY action (action),
+            KEY source (post_type,source_id)
         ) {$this->db->get_charset_collate()};");
         $this->db->query("UPDATE {$this->table} SET triggered_by = 'manual' WHERE triggered_by = 'button'"); // Renamed in schema 3.
         update_option(self::SCHEMA_OPTION, self::SCHEMA);
@@ -142,6 +148,38 @@ final class Log
         $rows = $this->db->get_results($this->db->prepare("SELECT level, COUNT(*) n FROM {$this->table} WHERE run_id = %s GROUP BY level", $runId));
 
         return array_column(array_map(fn (object $row): array => [$row->level, (int) $row->n], $rows), 1, 0);
+    }
+
+    /**
+     * Days entries are kept: the 'intranet_phonelist_log_days' filter, else INTRANET_PHONELIST_LOG_DAYS, else 90.
+     */
+    public static function days(): int
+    {
+        $days = defined('INTRANET_PHONELIST_LOG_DAYS') ? (int) INTRANET_PHONELIST_LOG_DAYS : self::DEFAULT_DAYS;
+
+        return max(1, (int) apply_filters('intranet_phonelist_log_days', $days));
+    }
+
+    /**
+     * Delete entries older than days(), a chunk at a time. Returns rows deleted.
+     */
+    public function prune(): int
+    {
+        $before = gmdate('Y-m-d H:i:s', time() - self::days() * DAY_IN_SECONDS);
+        $total = 0;
+        for ($round = 0; $round < 50; $round++) {
+            $deleted = (int) $this->db->query($this->db->prepare(
+                "DELETE FROM {$this->table} WHERE created_at < %s ORDER BY id LIMIT %d",
+                $before,
+                self::PRUNE_CHUNK
+            ));
+            $total += $deleted;
+            if ($deleted < self::PRUNE_CHUNK) {
+                break;
+            }
+        }
+
+        return $total;
     }
 
     /**

@@ -8,7 +8,7 @@ use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
 use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
-use ConstructiveMedia\IntranetPhonelist\Sync\Log;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Sync\OracleSource;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
 use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
@@ -18,6 +18,8 @@ use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
  */
 final class Plugin
 {
+    public const DAILY_HOOK = 'iphl_daily';
+
     public static function boot(string $pluginFile): void
     {
         global $wpdb;
@@ -49,6 +51,12 @@ final class Plugin
             $synchronizer->run('manual');
         });
         register_activation_hook($pluginFile, [$log, 'install']);
+
+        // Daily housekeeping: expired log entries.
+        add_action(self::DAILY_HOOK, [$log, 'prune']);
+        if (!wp_next_scheduled(self::DAILY_HOOK)) {
+            wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
+        }
 
         if (is_admin()) {
             (new SettingsPage($synchronizer, $photos, $companies, $log))->register();

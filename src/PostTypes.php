@@ -3,22 +3,10 @@
 namespace ConstructiveMedia\IntranetPhonelist;
 
 /**
- * Company (managed by hand) → Division (synced) → Staff (synced).
+ * Company → Division → Staff, as pushed by Data Hub (see Schema), plus the JWH Club taxonomy.
  */
 final class PostTypes
 {
-    /** Value kinds: how a synced column is converted at sync and shown in the editor. */
-    public const DATE = 'date';
-    /** 'y' → '1', anything else → '0'; a locked Yes/No select (a checkbox's label stays clickable). */
-    public const BOOL = 'bool';
-    /** 'e' → 'active', anything else → 'inactive'; an ACF select. */
-    public const STATUS = 'status';
-    /** Stored in international E.164 format via libphonenumber ('+61437793226'); unreadable numbers are kept as they are. */
-    public const PHONE = 'phone';
-    public const STATUS_CHOICES = ['active' => 'Active', 'inactive' => 'Inactive'];
-    /** Two-digit years resolve to the most recent past year: a birth date is never in the future. */
-    public const BIRTH_DATE = 'birth_date';
-
     /** Prefix for everything this plugin puts in WordPress's shared namespaces. */
     private const PREFIX = 'iphl_';
 
@@ -26,14 +14,21 @@ final class PostTypes
     public const DIVISION = self::PREFIX . 'division';
     public const STAFF = self::PREFIX . 'staff';
 
+    /** Singular and plural labels, in menu order. */
+    private const LABELS = [
+        self::COMPANY => ['Company', 'Companies'],
+        self::DIVISION => ['Division', 'Divisions'],
+        self::STAFF => ['Staff Member', 'Staff'],
+    ];
+
     /**
-     * Links stored on each staff member by the sync (post IDs), worked out from synced fields:
-     * division from DIV_CODE, company from the division's Company, reports_to from REPORTS_TO_ID = the manager's POSITION_NO.
+     * Links stored on each staff member (post IDs), set when records are written (see Relations):
+     * division from division_id, company from the division's Company, manager from reports_to.
      */
     public const STAFF_LINKS = [
-        'division' => ['label' => 'Division', 'type' => self::DIVISION, 'multiple' => false],
-        'company' => ['label' => 'Company', 'type' => self::COMPANY, 'multiple' => false],
-        'reports_to' => ['label' => 'Reports To', 'type' => self::STAFF, 'multiple' => true],
+        'division' => ['label' => 'Division', 'type' => self::DIVISION],
+        'company' => ['label' => 'Company', 'type' => self::COMPANY],
+        'manager' => ['label' => 'Manager', 'type' => self::STAFF],
     ];
 
     /**
@@ -54,11 +49,9 @@ final class PostTypes
         '10-year-club' => ['10 Year Club', 'Celebrating 10 years with JWH Group.'],
     ];
 
-    /** HR fields kept out of the log: it records that they changed, never their values. */
-    public const PRIVATE_COLUMNS = ['DOB', 'HOME_PHONE'];
-
-    /** Post meta on synced posts: the Oracle key, and the fingerprint of the last synced row. */
+    /** Post meta on pushed posts: the Data Hub ID, the updated_at last applied, and the fingerprint of the stored fields. */
     public const SOURCE_ID = '_' . self::PREFIX . 'source_id';
+    public const UPDATED_AT = '_' . self::PREFIX . 'updated_at';
     public const SOURCE_HASH = '_' . self::PREFIX . 'source_hash';
 
     /** Who can see and manage Phonelist in the admin. */
@@ -69,83 +62,6 @@ final class PostTypes
 
     /** Kept in capitals by prettyName(). */
     private const ACRONYMS = ['JWH', 'IT', 'GSH', 'W.A.'];
-
-    /**
-     * Post types mirrored from Oracle, in sync order (divisions before staff).
-     *
-     * 'fields' is the editor layout: tab => [ORACLE_COLUMN => [label, width %, date kind?]]. Widths in a row add up to 100.
-     * Kinds (self::DATE, BIRTH_DATE, BOOL, STATUS, PHONE) are converted once at sync (Planner::normalize()),
-     * e.g. Oracle's '05Sep85' → ACF's Ymd '19850905'. 'columns' (what the sync SELECTs and writes) and
-     * 'kinds' (column => kind) are derived from it.
-     *
-     * @return array<string, array{singular: string, plural: string, group: string, table: string, key: string, title: callable, fields: array, columns: string[], dates: array<string, string>}>
-     */
-    public static function synced(): array
-    {
-        $types = [
-            self::DIVISION => [
-                'singular' => 'Division',
-                'plural' => 'Divisions',
-                'group' => 'Division Details',
-                'table' => 'DIVISIONS',
-                'key' => 'DIV_CODE',
-                'title' => fn (array $row): string => self::prettyName($row['DIV_NAME']),
-                'fields' => [
-                    'Details' => [
-                        'DIV_CODE' => ['Division Code', 25], 'DIV_NAME' => ['Division Name', 75],
-                        'PHONE' => ['Phone', 33, self::PHONE], 'FAX' => ['Fax', 33, self::PHONE], 'DX_NO' => ['DX Number', 34],
-                    ],
-                    'Address' => [
-                        'DIV_ADDR1' => ['Address Line 1', 40], 'DIV_ADDR2' => ['Address Line 2', 40], 'DIV_PCODE' => ['Postcode', 20],
-                        'POSTAL_ADDRESS' => ['Postal Address', 100],
-                    ],
-                ],
-            ],
-            self::STAFF => [
-                'singular' => 'Staff Member',
-                'plural' => 'Staff',
-                'group' => 'Staff Details',
-                'table' => 'PHONE_LIST_INTRANET',
-                'key' => 'ID',
-                // Admin label only; displays should use the fields.
-                'title' => fn (array $row): string => self::displayName($row['PREF_NAME'], $row['NAME_FIRST'], $row['NAME_LAST_CO']),
-                'fields' => [
-                    'Contact' => [
-                        'PREF_NAME' => ['Preferred Name', 33], 'NAME_FIRST' => ['First Name', 33], 'NAME_LAST_CO' => ['Last Name', 34],
-                        'FULL_NAME' => ['Full Name', 100],
-                        // PH_EXT holds full direct numbers; the short extensions are in VOIP (left as they are).
-                        'EMAIL' => ['Email', 50], 'MOBILE_NO' => ['Mobile', 25, self::PHONE], 'PH_EXT' => ['Direct Phone', 25, self::PHONE],
-                        'VOIP' => ['Extension (VoIP)', 50], 'HOME_PHONE' => ['Home Phone', 50, self::PHONE],
-                    ],
-                    'Role' => [
-                        'POSITION' => ['Position', 50], 'POSITION_NO' => ['Position No.', 25], 'POSITION_ABBR' => ['Position Abbr.', 25],
-                        'JOB' => ['Job', 50], 'JOB_TYPE' => ['Job Type', 50],
-                        'TAG' => ['Department Code', 25], 'TAG_DESCRIPTION' => ['Department', 75],
-                        'DIV_CODE' => ['Division Code', 25], 'COMPANY_ID' => ['Company ID', 25], 'REPORTS_TO_ID' => ['Reports To (ID)', 25],
-                        'USERNAME' => ['Username', 25],
-                    ],
-                    'Employment' => [
-                        'START_DATE' => ['Start Date', 50, self::DATE], 'INDUCTION_COMPLETE_DATE' => ['Induction Completed', 50, self::DATE],
-                        'E_STATUS' => ['Status', 33, self::STATUS], 'ON_LEAVE' => ['On Leave', 33, self::DATE], 'AWARD_CODE' => ['Award Code', 34],
-                    ],
-                    'Birthday' => [
-                        'DOB' => ['Date of Birth', 50, self::BIRTH_DATE], 'HIDE_BIRTHDAY' => ['Hide Birthday', 50, self::BOOL],
-                    ],
-                    'Record' => [
-                        'ID' => ['Oracle ID', 100],
-                    ],
-                ],
-            ],
-        ];
-
-        foreach ($types as &$type) {
-            $fields = array_merge(...array_values($type['fields']));
-            $type['columns'] = array_keys($fields);
-            $type['kinds'] = array_filter(array_map(fn (array $field): ?string => $field[2] ?? null, $fields));
-        }
-
-        return $types;
-    }
 
     /**
      * 'W.A. COUNTRY BUILDERS ( BUNBURY)' → 'W.A. Country Builders (Bunbury)'.
@@ -159,51 +75,54 @@ final class PostTypes
         return preg_replace_callback("/\\b($acronyms)(?=\\W|$)/i", fn (array $match): string => strtoupper($match[1]), $name);
     }
 
-    public static function fieldKey(string $type, string $column): string
+    public static function fieldKey(string $postType, string $field): string
     {
-        return 'field_iphl_' . self::shortName($type) . '_' . strtolower($column);
+        return 'field_iphl_' . self::shortName($postType) . '_' . $field;
+    }
+
+    public static function linkKey(string $name): string
+    {
+        return 'field_iphl_staff_link_' . $name;
     }
 
     /**
      * 'iphl_staff' → 'staff', for ACF keys (already prefixed, and stored against every post, so kept stable).
      */
-    private static function shortName(string $type): string
+    private static function shortName(string $postType): string
     {
-        return substr($type, strlen(self::PREFIX));
+        return substr($postType, strlen(self::PREFIX));
     }
 
     /**
      * Preferred name (else first name) + surname.
      */
-    public static function displayName(string $preferred, string $first, string $last): string
+    public static function displayName(?string $preferred, ?string $first, ?string $last): string
     {
-        return trim((trim($preferred) !== '' ? $preferred : $first) . ' ' . $last);
+        return trim((trim((string) $preferred) !== '' ? $preferred : $first) . ' ' . $last);
     }
 
     public function register(): void
     {
-        $types = [self::COMPANY => ['singular' => 'Company', 'plural' => 'Companies']] + self::synced();
-
         // Administrators only: staff records hold HR data (DOB, home phone).
         $create = ['create_posts'];
         $delete = ['delete_posts', 'delete_published_posts', 'delete_others_posts', 'delete_private_posts'];
         $edit = ['edit_posts', 'edit_others_posts', 'edit_published_posts', 'edit_private_posts', 'publish_posts', 'read_private_posts'];
         $adminOnly = array_fill_keys([...$create, ...$delete, ...$edit], self::CAPABILITY);
 
-        // Synced types can be viewed and edited (e.g. a division's Company) but not added or deleted by hand:
-        // a hand-made post has no Oracle ID, so the sync would never manage it.
-        $syncedOnly = array_fill_keys([...$create, ...$delete], 'do_not_allow') + $adminOnly;
+        // Pushed types can be viewed and edited (e.g. a division's Company) but not added or deleted by hand:
+        // a hand-made post has no Data Hub ID, so nothing would ever update it.
+        $pushedOnly = array_fill_keys([...$create, ...$delete], 'do_not_allow') + $adminOnly;
 
         // Registration order is the submenu order: Companies, Divisions, Staff.
-        foreach ($types as $type => $config) {
+        foreach (self::LABELS as $type => [$singular, $plural]) {
             register_post_type($type, [
-                'labels' => ['name' => $config['plural'], 'singular_name' => $config['singular']],
+                'labels' => ['name' => $plural, 'singular_name' => $singular],
                 'public' => false,
                 'show_ui' => true,
                 'show_in_menu' => self::MENU,
                 'supports' => $type === self::STAFF ? ['title', 'thumbnail'] : ['title'],
                 'map_meta_cap' => true,
-                'capabilities' => $type === self::COMPANY ? $adminOnly : $syncedOnly,
+                'capabilities' => $type === self::COMPANY ? $adminOnly : $pushedOnly,
             ]);
         }
 
@@ -244,36 +163,38 @@ final class PostTypes
         }, 99);
     }
 
+    /**
+     * Every pushed field, locked: Data Hub owns them. Plus a Record tab with the Data Hub ID and the last update time.
+     */
     public function registerFields(): void
     {
-        // Synced fields are read-only in the editor: Oracle owns them.
-        foreach (self::synced() as $type => $config) {
+        foreach (Schema::TYPES as $type => $postType) {
             $fields = [];
-            foreach ($config['fields'] as $tab => $columns) {
-                $fields[] = ['key' => 'field_iphl_' . self::shortName($type) . '_tab_' . sanitize_key($tab), 'label' => $tab, 'type' => 'tab'];
-                foreach ($columns as $column => [$label, $width]) {
-                    $kind = match ($config['kinds'][$column] ?? null) {
-                        self::DATE, self::BIRTH_DATE => ['type' => 'date_picker', 'display_format' => 'j M Y', 'return_format' => 'Ymd'],
-                        self::BOOL => ['type' => 'select', 'choices' => ['1' => 'Yes', '0' => 'No'], 'disabled' => 1],
-                        self::STATUS => ['type' => 'select', 'choices' => self::STATUS_CHOICES, 'disabled' => 1],
-                        default => [],
-                    };
-                    $fields[] = $kind + [
-                        'key' => self::fieldKey($type, $column),
-                        'name' => strtolower($column),
-                        'label' => $label,
-                        'type' => 'text',
-                        'readonly' => 1,
-                        'wrapper' => ['width' => $width, 'class' => 'iphl-locked'],
-                    ];
+            $tab = null;
+            foreach ([...array_filter(Schema::fields($type), fn (array $config): bool => empty($config['title'])), ...self::recordFields()] as $name => $config) {
+                if ($config['tab'] !== $tab) {
+                    $tab = $config['tab'];
+                    $fields[] = ['key' => self::fieldKey($postType, 'tab_' . sanitize_key($tab)), 'label' => $tab, 'type' => 'tab'];
                 }
+                $fields[] = match ($config['kind']) {
+                    'date' => ['type' => 'date_picker', 'display_format' => 'j M Y', 'return_format' => 'Ymd'],
+                    'bool' => ['type' => 'select', 'choices' => ['1' => 'Yes', '0' => 'No'], 'allow_null' => 1, 'disabled' => 1],
+                    default => [],
+                } + [
+                    'key' => self::fieldKey($postType, $name),
+                    'name' => $name,
+                    'label' => $config['label'],
+                    'type' => 'text',
+                    'readonly' => 1,
+                    'wrapper' => ['width' => $config['width'], 'class' => 'iphl-locked'],
+                ];
             }
 
             acf_add_local_field_group([
-                'key' => 'group_iphl_' . self::shortName($type),
-                'title' => $config['group'],
+                'key' => 'group_iphl_' . self::shortName($postType),
+                'title' => self::LABELS[$postType][0] . ' Details',
                 'fields' => $fields,
-                'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => $type]]],
+                'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => $postType]]],
             ]);
         }
 
@@ -293,7 +214,7 @@ final class PostTypes
             'position' => 'side',
         ]);
 
-        // JWH Club: set by hand, never by the sync. Saved as the staff member's club term.
+        // JWH Club: set by hand, never by Data Hub. Saved as the staff member's club term.
         acf_add_local_field_group([
             'key' => 'group_iphl_staff_club',
             'title' => 'JWH Club',
@@ -328,8 +249,8 @@ final class PostTypes
             'location' => [[['param' => 'taxonomy', 'operator' => '==', 'value' => self::CLUB_TAXONOMY]]],
         ]);
 
-        // Staff links, stored by the sync so Admin Columns and queries can use them. Hidden in the editor
-        // (the Relationships box shows them) and disabled, so a manual save never overwrites them.
+        // Staff links, so Admin Columns and queries can use them. Hidden in the editor (the Relationships box shows them)
+        // and locked, so a manual save never overwrites them.
         acf_add_local_field_group([
             'key' => 'group_iphl_staff_links',
             'title' => 'Links',
@@ -340,7 +261,6 @@ final class PostTypes
                 'label' => $link['label'],
                 'type' => 'post_object',
                 'post_type' => [$link['type']],
-                'multiple' => (int) $link['multiple'],
                 'return_format' => 'id',
                 'allow_null' => 1,
                 'disabled' => 1,
@@ -350,13 +270,19 @@ final class PostTypes
         ]);
     }
 
-    public static function linkKey(string $name): string
+    /**
+     * Read-only record details, shown from the post meta the ingest writes.
+     */
+    private static function recordFields(): array
     {
-        return 'field_iphl_staff_link_' . $name;
+        return [
+            self::SOURCE_ID => ['label' => 'Data Hub ID', 'kind' => 'string', 'tab' => 'Record', 'width' => 50],
+            self::UPDATED_AT => ['label' => 'Updated At', 'kind' => 'string', 'tab' => 'Record', 'width' => 50],
+        ];
     }
 
     /**
-     * Write a synced value the way ACF stores it (value + field-key reference), bypassing ACF's save path,
+     * Write a pushed value the way ACF stores it (value + field-key reference), bypassing ACF's save path,
      * which lock() closes to everyone else.
      */
     public static function store(int $postId, string $fieldKey, string $name, mixed $value): void
@@ -366,15 +292,15 @@ final class PostTypes
     }
 
     /**
-     * Synced fields and staff links can't be changed from the editor: whatever is submitted, the stored value is kept.
+     * Pushed fields and staff links can't be changed from the editor: whatever is submitted, the stored value is kept.
      * (ACF's 'disabled'/'readonly' is only visual and isn't honoured by every field type.) Hand-set fields stay editable.
      */
     public function lock(): void
     {
         $locked = [];
-        foreach (self::synced() as $type => $config) {
-            foreach ($config['columns'] as $column) {
-                $locked[self::fieldKey($type, $column)] = strtolower($column);
+        foreach (Schema::TYPES as $type => $postType) {
+            foreach ([...array_keys(Schema::fields($type)), ...array_keys(self::recordFields())] as $name) {
+                $locked[self::fieldKey($postType, $name)] = $name;
             }
         }
         foreach (array_keys(self::STAFF_LINKS) as $name) {
