@@ -5,6 +5,8 @@ PHP_SAPI === 'cli' || exit;
 
 require __DIR__ . '/../vendor/autoload.php';
 
+use ConstructiveMedia\IntranetPhonelist\Api\Problem;
+use ConstructiveMedia\IntranetPhonelist\Api\Signature;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
@@ -216,5 +218,22 @@ foreach (array_keys(Schema::TYPES) as $type) {
     }
     assert(array_filter($rows) === [], "$type has an unfinished row");
 }
+
+// Request signatures: HMAC-SHA256 over "<t>.<raw body>", 5-minute window.
+$secret = 'test-secret'; $body = '{"id":"S1","name":"A"}'; $now = 1_760_000_000;
+$header = Signature::sign($body, $secret, $now);
+assert(preg_match('/^t=1760000000,v1=[0-9a-f]{64}$/', $header) === 1);
+assert(Signature::verify($header, $body, $secret, $now + 299) === null);
+assert(Signature::verify($header, $body, $secret, $now - 299) === null);
+assert(Signature::verify($header, $body, $secret, $now + 301) === 'expired');
+assert(Signature::verify($header, '{"id": "S1", "name": "A"}', $secret, $now) === 'mismatch'); // re-encoded body fails
+assert(Signature::verify($header, $body, 'other', $now) === 'mismatch');
+assert(Signature::verify(null, $body, $secret, $now) === 'missing' && Signature::verify('', $body, $secret, $now) === 'missing');
+assert(Signature::verify('v1=abc', $body, $secret, $now) === 'malformed');
+
+// Problem details (RFC 9457).
+assert(Problem::body(422, 'Invalid record', 'staff S1', [['field' => 'email', 'message' => 'Not a valid email address.']])
+    === ['type' => 'about:blank#validation', 'title' => 'Invalid record', 'status' => 422, 'detail' => 'staff S1', 'errors' => [['field' => 'email', 'message' => 'Not a valid email address.']]]);
+assert(Problem::body(404, 'Not found') === ['type' => 'about:blank', 'title' => 'Not found', 'status' => 404, 'detail' => '']);
 
 echo "plan-check OK\n";
