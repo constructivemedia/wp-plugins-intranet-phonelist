@@ -99,7 +99,7 @@ final class Photos
         $name = basename((string) parse_url($url, PHP_URL_PATH)) ?: 'photo.jpg';
         $result = $this->attach($postId, $file, $name, true);
         if ($result !== 'failed') {
-            update_post_meta($postId, self::URL, $url);
+            update_post_meta($postId, self::URL, wp_slash($url));
         }
 
         return $result;

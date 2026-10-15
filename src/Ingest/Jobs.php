@@ -13,8 +13,8 @@ use wpdb;
  * The queue for batches and snapshots, in its own table. A job is stored, answered with 202, then processed after the
  * response is sent; a cron sweep every minute picks up anything left queued or abandoned.
  *
- * Safe to re-run: every item is an upsert or delete guarded by updated_at, so a job interrupted part way resumes from
- * its cursor and at worst repeats one item. One job runs at a time, oldest first.
+ * Safe to re-run: every item is an upsert or delete guarded by updated_at, so a job interrupted part way is simply
+ * run again from the start. One job runs at a time, oldest first: a sweep that finds another job running leaves it be.
  */
 final class Jobs
 {
@@ -152,17 +152,12 @@ final class Jobs
     }
 
     /**
-     * Run one job, if it's waiting (or abandoned) and no other job is running in this database.
+     * Run one job, if it's waiting (or abandoned) and no other job is running.
      */
     public function process(string $id): void
     {
-        if ((int) $this->db->get_var("SELECT GET_LOCK('iphl:jobs', 0)") !== 1) {
-            return; // Another process is working through the queue; it, or the next sweep, will get to this job.
-        }
-        try {
+        if (!$this->busy()) {
             $this->run($id);
-        } finally {
-            $this->db->query("SELECT RELEASE_LOCK('iphl:jobs')");
         }
     }
 
@@ -171,23 +166,27 @@ final class Jobs
      */
     public function sweep(): void
     {
-        if ((int) $this->db->get_var("SELECT GET_LOCK('iphl:jobs', 0)") !== 1) {
-            return;
-        }
-        try {
-            $started = time();
-            while (time() - $started < self::SWEEP_SECONDS) {
-                $next = $this->db->get_var($this->db->prepare(
-                    "SELECT id FROM {$this->table} WHERE status = 'queued' OR (status = 'running' AND heartbeat < %s) ORDER BY created_at, id LIMIT 1",
-                    gmdate('Y-m-d H:i:s', time() - self::STALE_SECONDS)
-                ));
-                if (!$next || !$this->run($next)) {
-                    break;
-                }
+        $started = time();
+        while (!$this->busy() && time() - $started < self::SWEEP_SECONDS) {
+            $next = $this->db->get_var($this->db->prepare(
+                "SELECT id FROM {$this->table} WHERE status = 'queued' OR (status = 'running' AND heartbeat < %s) ORDER BY created_at, id LIMIT 1",
+                gmdate('Y-m-d H:i:s', time() - self::STALE_SECONDS)
+            ));
+            if (!$next || !$this->run($next)) {
+                break;
             }
-        } finally {
-            $this->db->query("SELECT RELEASE_LOCK('iphl:jobs')");
         }
+    }
+
+    /**
+     * Whether another job is running (and still alive).
+     */
+    private function busy(): bool
+    {
+        return (bool) $this->db->get_var($this->db->prepare(
+            "SELECT 1 FROM {$this->table} WHERE status = 'running' AND heartbeat >= %s LIMIT 1",
+            gmdate('Y-m-d H:i:s', time() - self::STALE_SECONDS)
+        ));
     }
 
     /**
@@ -247,21 +246,20 @@ final class Jobs
 
         $job = $this->db->get_row($this->db->prepare("SELECT * FROM {$this->table} WHERE id = %s", $id));
         $items = json_decode($job->payload, true) ?: [];
-        $results = json_decode($job->results, true) ?: [];
+        $results = [];
         $trigger = $job->triggered_by;
 
         if ((int) $job->attempts > self::MAX_ATTEMPTS) {
             $this->finish($id, 'failed', $results, 'Gave up after ' . self::MAX_ATTEMPTS . ' attempts.');
             return true;
         }
-        if ((int) $job->cursor_at === 0) {
-            $this->log->write($id, $trigger, 'info', 'job_start', $job->type ? (Schema::TYPES[$job->type] ?? null) : null, null, $job->kind, null, ['items' => (int) $job->total]);
-        }
+        $this->log->write($id, $trigger, 'info', 'job_start', $job->type ? (Schema::TYPES[$job->type] ?? null) : null, null, $job->kind, null, ['items' => (int) $job->total, 'attempt' => (int) $job->attempts]);
 
         try {
-            for ($i = (int) $job->cursor_at; $i < count($items); $i++) {
-                $results[$i] = $this->item($job->kind, $job->type, $items[$i], $id, $trigger);
-                $this->db->update($this->table, ['cursor_at' => $i + 1, 'results' => wp_json_encode($results), 'heartbeat' => gmdate('Y-m-d H:i:s')], ['id' => $id]);
+            foreach ($items as $i => $item) {
+                $results[] = $this->item($job->kind, $job->type, $item, $id, $trigger);
+                // Progress for the Jobs tab, and a sign of life; the results are saved once, at the end.
+                $this->db->update($this->table, ['cursor_at' => $i + 1, 'heartbeat' => gmdate('Y-m-d H:i:s')], ['id' => $id]);
             }
             if ($job->kind === 'snapshot') {
                 $results = [...$results, ...$this->finishSnapshot($job->type, $items, $id, $trigger)];

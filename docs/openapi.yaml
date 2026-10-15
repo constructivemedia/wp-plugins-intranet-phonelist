@@ -312,6 +312,10 @@ components:
             properties:
               result: { type: string, enum: [created, updated, unchanged, deleted] }
               message: { type: string }
+              warnings:
+                description: Values kept but worth fixing at the source, e.g. a phone number we couldn't read.
+                type: array
+                items: { $ref: '#/components/schemas/FieldError' }
     JobAccepted:
       description: '`202` for a new job (with a `Location` header), `200` for a repeated `Idempotency-Key`.'
       headers:
@@ -395,6 +399,7 @@ components:
         home_phone: { $ref: '#/components/schemas/Phone', description: 'Private. Also used for after-hours numbers.' }
         position: { $ref: '#/components/schemas/Text' }
         position_number: { $ref: '#/components/schemas/Text' }
+        position_abbr: { $ref: '#/components/schemas/Text' }
         job: { $ref: '#/components/schemas/Text' }
         job_type: { $ref: '#/components/schemas/Text' }
         award_code: { $ref: '#/components/schemas/Text' }

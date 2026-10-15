@@ -103,6 +103,17 @@ try {
     assert($in->apply(['op' => 'put', 'type' => 'nope', 'id' => 'test-x', 'data' => []], 'test-run', 'api')->status === 422);
     assert($in->apply(['op' => 'put', 'type' => 'staff', 'id' => 'test-3', 'data' => $jane + ['updated_at' => $t1]], 'test-run', 'api')->result === 'created');
 
+    // Strings are stored exactly as sent, backslashes included; an id with one is found again rather than duplicated.
+    assert($in->put('staff', 'test-\\slash', ['position' => 'Estimator\\Supervisor'] + $jane + ['updated_at' => $t1], 'test-run', 'api')->result === 'created');
+    assert(get_post_meta($in->postId('staff', 'test-\\slash'), 'position', true) === 'Estimator\\Supervisor');
+    assert($in->put('staff', 'test-\\slash', ['position' => 'Estimator\\Supervisor'] + $jane + ['updated_at' => $t1], 'test-run', 'api')->result === 'unchanged');
+
+    // Unreadable phone numbers are kept as sent and logged as a warning; an over-long label doesn't lose the log row.
+    $in->put('staff', 'test-phone', ['mobile' => '0894647800 - Bunbury', 'last_name' => str_repeat('Long', 100)] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $phoneLog = $wpdb->get_row("SELECT level, context FROM $logTable WHERE source_id = 'test-phone' ORDER BY id DESC LIMIT 1");
+    assert($phoneLog && $phoneLog->level === 'warning' && str_contains($phoneLog->context, 'mobile'));
+    assert(in_array('position_abbr', array_keys(Schema::fields('staff')), true));
+
     // Relations: linked on write, in any order; a new division gets a company named after it; a division save re-points its staff.
     $link = fn (int $postId, string $name): int => (int) get_post_meta($postId, $name, true);
     assert($in->put('staff', 'test-s1', $jane + ['division_id' => 'test-RD', 'reports_to' => 'test-s2', 'updated_at' => $t1], 'test-run', 'api')->result === 'created');
@@ -175,6 +186,12 @@ try {
         'meta_input' => [PostTypes::SOURCE_ID => 'test-UD', 'div_code' => 'test-UD', 'div_name' => 'TEST', 'div_addr1' => '1 Test St', 'fax' => '1', 'dx_no' => '2']]);
     Upgrade::run();
     Upgrade::run();
+    $version = get_option('intranet_phonelist_version');
+    update_option('intranet_phonelist_version', '1');
+    set_transient('intranet_phonelist_upgrading', 1, 60);
+    assert(Upgrade::maybeRun($log) === false);                                                     // another request is already upgrading
+    delete_transient('intranet_phonelist_upgrading');
+    update_option('intranet_phonelist_version', $version);
     $m = fn (int $postId, string $key) => get_post_meta($postId, $key, true);
     assert($m($us, 'first_name') === 'Old' && $m($us, '_first_name') === 'field_iphl_staff_first_name' && !metadata_exists('post', $us, 'name_first'));
     assert($m($us, 'division_id') === 'test-UD' && $m($us, 'department_code') === '20' && $m($us, 'phone') === '+61894647800' && $m($us, 'date_of_birth') === '19850905');

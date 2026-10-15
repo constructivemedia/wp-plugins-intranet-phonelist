@@ -59,9 +59,10 @@ final class Schema
                 'home_phone' => $field('Home / After Hours Phone', 50, 'Contact', 'phone'),
                 'position' => $field('Position', 50, 'Role'),
                 'position_number' => $field('Position No.', 25, 'Role'),
-                'award_code' => $field('Award Code', 25, 'Role'),
-                'job' => $field('Job', 50, 'Role'),
-                'job_type' => $field('Job Type', 50, 'Role'),
+                'position_abbr' => $field('Position Abbr.', 25, 'Role'),
+                'job' => $field('Job', 33, 'Role'),
+                'job_type' => $field('Job Type', 33, 'Role'),
+                'award_code' => $field('Award Code', 34, 'Role'),
                 'department_code' => $field('Department Code', 25, 'Role'),
                 'department' => $field('Department', 75, 'Role'),
                 'division_id' => $field('Division ID', 33, 'Role'),
@@ -83,11 +84,14 @@ final class Schema
      *
      * Full writes ($partial false) return every field, missing ones as null. Partial writes return only the fields sent.
      *
-     * @return array{data: array<string, ?string>, errors: array<array{field: string, message: string}>}
+     * Warnings list values kept but worth fixing at the source: phone numbers that couldn't be read.
+     *
+     * @return array{data: array<string, ?string>, errors: array<array{field: string, message: string}>, warnings: array<array{field: string, message: string}>}
      */
     public static function validate(string $type, array $input, bool $partial): array
     {
         $errors = [];
+        $warnings = [];
         $error = function (string $field, string $message) use (&$errors): void {
             $errors[] = ['field' => $field, 'message' => $message];
         };
@@ -123,10 +127,13 @@ final class Schema
                 $error($field, $message);
                 continue;
             }
+            if ($config['kind'] === 'phone' && PhoneNumbers::available() && PhoneNumbers::format($stored) === null) {
+                $warnings[] = ['field' => $field, 'message' => 'Not a phone number we could read; kept as sent.'];
+            }
             $data[$field] = $stored;
         }
 
-        return ['data' => $data, 'errors' => $errors];
+        return ['data' => $data, 'errors' => $errors, 'warnings' => $warnings];
     }
 
     /**

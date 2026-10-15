@@ -272,7 +272,7 @@ final class PostTypes
      */
     public static function store(int $postId, string $fieldKey, string $name, mixed $value): void
     {
-        update_post_meta($postId, $name, $value);
+        update_post_meta($postId, $name, wp_slash($value)); // WordPress unslashes meta values; keep backslashes as sent.
         update_post_meta($postId, '_' . $name, $fieldKey);
     }
 

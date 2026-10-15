@@ -186,10 +186,10 @@ Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one e
 | `preferred_name` | string | Shown instead of `first_name` when set |
 | `status` | string, required | `active` stays on the phone list. **Any other value removes the person**, the same as a DELETE. The list of values is still being finalised. |
 | `email` | string | Must be a valid address |
-| `mobile`, `phone` | string | Any format; stored as E.164. `phone` is the direct number. |
+| `mobile`, `phone` | string | Any format; stored as E.164. `phone` is the direct number. A number we can't read is kept as sent, and the reply includes a `warnings` entry for it. |
 | `extension` | string | VoIP extension |
 | `home_phone` | string | Private: never shown on the intranet. Also used for after-hours numbers. |
-| `position`, `position_number`, `job`, `job_type`, `award_code` | string | |
+| `position`, `position_number`, `position_abbr`, `job`, `job_type`, `award_code` | string | |
 | `department_code`, `department` | string | |
 | `division_id` | string | The division's `id` |
 | `company_id` | string | Stored as sent; the company shown comes from the division |
@@ -209,7 +209,7 @@ Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one e
 | `409` | `updated_at` is older than the stored record | `{"type":"about:blank","title":"Older than the stored record","status":409,"detail":"Older than the stored record (2026-10-15T10:00:00+08:00)."}` |
 | `413` | Body over 5 MB, batch over 500, snapshot over 5,000 | `{"type":"about:blank","title":"Request too large","status":413,"detail":"At most 500 operations per request."}` |
 | `422` | Missing or invalid fields; empty batch or snapshot | `{"type":"about:blank#validation","title":"Invalid record","status":422,"detail":"","errors":[{"field":"last_name","message":"Required."}]}` |
-| `503` | Signing isn't configured on the site, or the record is busy; retry later | `{"type":"about:blank","title":"Could not be saved","status":503,"detail":"The record is busy; try again."}` |
+| `503` | Signing isn't configured on the site, or a job couldn't be queued; retry later | `{"type":"about:blank","title":"Could not be queued","status":503,"detail":"The job could not be stored: … Try again."}` |
 
 ## Changelog
 

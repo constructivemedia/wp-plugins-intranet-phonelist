@@ -18,8 +18,6 @@ use wpdb;
  */
 final class Ingestor
 {
-    /** Seconds to wait for another write to the same record to finish. */
-    private const LOCK_TIMEOUT = 10;
     /**
      * Deleted records are remembered (option iphl_tomb_<hash>: their last updated_at) so an older push that arrives
      * late can't bring them back. Kept for this many days.
@@ -64,7 +62,7 @@ final class Ingestor
             return $this->finish(new Outcome('invalid', 422, errors: [['field' => 'updated_at', 'message' => 'Must be an ISO 8601 date and time with a timezone offset.']]), $type, $id, '', $runId, $trigger);
         }
 
-        return $this->locked($type, $id, $runId, $trigger, function () use ($type, $id, $time): array {
+        return $this->attempt($type, $id, $runId, $trigger, function () use ($type, $id, $time): array {
             $postId = $this->postId($type, $id);
             if (!$postId) {
                 return [new Outcome('deleted', 204, message: 'Already gone.'), ''];
@@ -134,13 +132,13 @@ final class Ingestor
         if (isset($input['id']) && $input['id'] !== $id) {
             return $this->finish(new Outcome('invalid', 422, errors: [['field' => 'id', 'message' => 'Must match the record ID it was sent to.']]), $type, $id, '', $runId, $trigger);
         }
-        ['data' => $data, 'errors' => $errors] = Schema::validate($type, ['id' => $id] + $input, $partial);
+        ['data' => $data, 'errors' => $errors, 'warnings' => $warnings] = Schema::validate($type, ['id' => $id] + $input, $partial);
         if ($errors) {
             return $this->finish(new Outcome('invalid', 422, errors: $errors), $type, $id, '', $runId, $trigger);
         }
         $time = Schema::updatedAt($input);
 
-        return $this->locked($type, $id, $runId, $trigger, function () use ($type, $id, $data, $partial, $time, $input): array {
+        return $this->attempt($type, $id, $runId, $trigger, function () use ($type, $id, $data, $partial, $time, $input, $warnings): array {
             $postId = $this->postId($type, $id);
             if (!$postId && $partial) {
                 return [new Outcome('not_found', 404, message: 'No record with this ID. Send the whole record with PUT to create it.'), ''];
@@ -168,9 +166,9 @@ final class Ingestor
             $title = $this->title($type, $new);
             $hash = self::hash($new);
             if ($postId && get_post_meta($postId, PostTypes::SOURCE_HASH, true) === $hash) {
-                update_post_meta($postId, PostTypes::UPDATED_AT, $input['updated_at']);
+                update_post_meta($postId, PostTypes::UPDATED_AT, wp_slash($input['updated_at']));
 
-                return [new Outcome('unchanged', 200), $title];
+                return [new Outcome('unchanged', 200, warnings: $warnings), $title];
             }
 
             $created = !$postId;
@@ -179,7 +177,7 @@ final class Ingestor
                 if (is_wp_error($postId)) {
                     return [new Outcome('error', 500, message: $postId->get_error_message()), $title];
                 }
-                update_post_meta($postId, PostTypes::SOURCE_ID, $id);
+                update_post_meta($postId, PostTypes::SOURCE_ID, wp_slash($id));
                 delete_option(self::tombstoneName($type, $id));
             } elseif (get_post_field('post_title', $postId, 'raw') !== $title) {
                 wp_update_post(wp_slash(['ID' => $postId, 'post_title' => $title]));
@@ -190,7 +188,7 @@ final class Ingestor
                     PostTypes::store($postId, PostTypes::fieldKey(Schema::TYPES[$type], $name), $name, $new[$name] ?? '');
                 }
             }
-            update_post_meta($postId, PostTypes::UPDATED_AT, $input['updated_at']);
+            update_post_meta($postId, PostTypes::UPDATED_AT, wp_slash($input['updated_at']));
             update_post_meta($postId, PostTypes::SOURCE_HASH, $hash);
 
             $this->relations?->afterWrite($type, $postId, $created);
@@ -198,26 +196,19 @@ final class Ingestor
                 $this->photos?->afterWrite($postId, $new, $created);
             }
 
-            return [new Outcome($created ? 'created' : 'updated', $created ? 201 : 200, self::changes($old, $new)), $title];
+            return [new Outcome($created ? 'created' : 'updated', $created ? 201 : 200, self::changes($old, $new), warnings: $warnings), $title];
         });
     }
 
     /**
-     * Run $work while holding this record's lock, so a single request and a running job never write it at once.
-     * $work returns [Outcome, title]; the outcome is logged.
+     * Run $work (which returns [Outcome, title]) and log the outcome; anything thrown becomes an 'error' outcome.
      */
-    private function locked(string $type, string $id, string $runId, string $trigger, callable $work): Outcome
+    private function attempt(string $type, string $id, string $runId, string $trigger, callable $work): Outcome
     {
-        $lock = 'iphl:' . md5("$type:$id"); // MySQL lock names are limited to 64 characters.
-        if ((int) $this->db->get_var($this->db->prepare('SELECT GET_LOCK(%s, %d)', $lock, self::LOCK_TIMEOUT)) !== 1) {
-            return $this->finish(new Outcome('error', 503, message: 'The record is busy; try again.'), $type, $id, '', $runId, $trigger);
-        }
         try {
             [$outcome, $title] = $work();
         } catch (Throwable $e) {
             [$outcome, $title] = [new Outcome('error', 500, message: $e->getMessage()), ''];
-        } finally {
-            $this->db->query($this->db->prepare('SELECT RELEASE_LOCK(%s)', $lock));
         }
 
         return $this->finish($outcome, $type, $id, $title, $runId, $trigger);
@@ -227,10 +218,10 @@ final class Ingestor
     {
         $level = match (true) {
             $outcome->status >= 500 => 'error',
-            $outcome->status >= 400 => 'warning',
+            $outcome->status >= 400, $outcome->warnings !== [] => 'warning',
             default => 'info',
         };
-        $context = array_filter(['changes' => $outcome->changes, 'errors' => $outcome->errors]);
+        $context = array_filter(['changes' => $outcome->changes, 'errors' => $outcome->errors, 'warnings' => $outcome->warnings]);
         $this->log->write($runId, $trigger, $level, $outcome->result, Schema::TYPES[$type] ?? null, $id !== '' ? $id : null, $title, $outcome->message, $context ?: null);
 
         return $outcome;

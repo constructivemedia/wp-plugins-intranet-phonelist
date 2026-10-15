@@ -28,7 +28,7 @@ final class Adapter
 
     private const STAFF_TABLE = 'PHONE_LIST_INTRANET';
     private const STAFF_COLUMNS = ['ID', 'NAME_FIRST', 'NAME_LAST_CO', 'PREF_NAME', 'EMAIL', 'MOBILE_NO', 'PH_EXT', 'VOIP', 'HOME_PHONE',
-        'POSITION', 'POSITION_NO', 'JOB', 'JOB_TYPE', 'AWARD_CODE', 'TAG', 'TAG_DESCRIPTION', 'DIV_CODE', 'COMPANY_ID', 'REPORTS_TO_ID',
+        'POSITION', 'POSITION_NO', 'POSITION_ABBR', 'JOB', 'JOB_TYPE', 'AWARD_CODE', 'TAG', 'TAG_DESCRIPTION', 'DIV_CODE', 'COMPANY_ID', 'REPORTS_TO_ID',
         'E_STATUS', 'START_DATE', 'ON_LEAVE', 'DOB', 'HIDE_BIRTHDAY'];
     private const DIVISION_TABLE = 'DIVISIONS';
     private const DIVISION_COLUMNS = ['DIV_CODE', 'DIV_NAME', 'PHONE', 'DIV_ADDR1', 'DIV_ADDR2', 'DIV_PCODE', 'POSTAL_ADDRESS'];
@@ -123,6 +123,7 @@ final class Adapter
             'home_phone' => $text('HOME_PHONE'),
             'position' => $text('POSITION'),
             'position_number' => $text('POSITION_NO'),
+            'position_abbr' => $text('POSITION_ABBR'),
             'job' => $text('JOB'),
             'job_type' => $text('JOB_TYPE'),
             'award_code' => $text('AWARD_CODE'),

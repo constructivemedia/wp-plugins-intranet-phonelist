@@ -11,6 +11,7 @@ final class Outcome
      * @param string $result created, updated, unchanged, deleted, stale, invalid, not_found or error.
      * @param array<string, mixed> $changes Field => ['from' => …, 'to' => …], or '(changed)' for private fields. Logged, never returned.
      * @param array<array{field: string, message: string}> $errors
+     * @param array<array{field: string, message: string}> $warnings Kept, but worth fixing at the source (e.g. unreadable phone numbers).
      */
     public function __construct(
         public readonly string $result,
@@ -18,6 +19,7 @@ final class Outcome
         public readonly array $changes = [],
         public readonly array $errors = [],
         public readonly ?string $message = null,
+        public readonly array $warnings = [],
     ) {
     }
 
@@ -33,6 +35,7 @@ final class Outcome
     {
         return ['result' => $this->result]
             + ($this->errors ? ['errors' => $this->errors] : [])
+            + ($this->warnings ? ['warnings' => $this->warnings] : [])
             + ($this->message !== null ? ['message' => $this->message] : []);
     }
 }

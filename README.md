@@ -40,7 +40,7 @@ Everything goes through one place, `Ingest\Ingestor`, whether it comes from a si
 - **Batches and snapshots** go into a queue table (`wp_iphl_jobs`):
   - The request gets `202` straight away, and the job is processed after the response is sent.
   - A cron task every minute picks up anything left behind.
-  - Jobs run one at a time, and an interrupted one resumes where it stopped.
+  - Jobs run one at a time. An interrupted one is simply run again: every item is safe to repeat.
   - On the server, run WP-Cron from the system cron so the sweep doesn't depend on site visits: `* * * * * wp cron event run --due-now --path=/path/to/wordpress`, as the web server's user.
 
 ### Stored values
@@ -49,7 +49,7 @@ Everything goes through one place, `Ingest\Ingestor`, whether it comes from a si
 |---|---|---|
 | Dates (`start_date`, `on_leave_until`, `date_of_birth`) | `Ymd` | Date picker |
 | `hide_birthday` | `1` / `0` | Select (Yes / No) |
-| Phones (`mobile`, `phone`, `home_phone`, division `phone`) | E.164 via libphonenumber (`+61437793226`); unreadable numbers are kept as sent | Text |
+| Phones (`mobile`, `phone`, `home_phone`, division `phone`) | E.164 via libphonenumber (`+61437793226`); unreadable numbers are kept as sent and logged as a warning | Text |
 | Everything else | As sent | Text |
 
 8-digit numbers with no area code are assumed to be WA (`08`); change `PhoneNumbers::DEFAULT_AREA_CODE` if that stops being true.

@@ -14,6 +14,7 @@ final class Upgrade
     public const VERSION = '2.0.0';
     public const EPOCH = '1970-01-01T00:00:00+00:00';
     private const VERSION_OPTION = 'intranet_phonelist_version';
+    private const UPGRADING = 'intranet_phonelist_upgrading';
 
     /** v1 field => v2 field, per post type. Fields with the same name in both are left alone. */
     private const RENAMES = [
@@ -48,14 +49,20 @@ final class Upgrade
     private const OPTIONS = ['intranet_phonelist_companies', 'intranet_phonelist_last_sync', 'intranet_phonelist_lock'];
 
     /**
-     * Run once per site, the first time v2 loads.
+     * Run once per site, the first time v2 loads. A request that finds another one upgrading leaves it to that one.
+     * Returns whether it ran.
      */
-    public static function maybeRun(Log $log): void
+    public static function maybeRun(Log $log): bool
     {
-        if (version_compare((string) get_option(self::VERSION_OPTION, '1'), self::VERSION, '<')) {
-            $log->write(wp_generate_uuid4(), 'system', 'notice', 'upgrade', null, null, 'v' . self::VERSION, null, self::run());
-            update_option(self::VERSION_OPTION, self::VERSION);
+        if (!version_compare((string) get_option(self::VERSION_OPTION, '1'), self::VERSION, '<') || get_transient(self::UPGRADING)) {
+            return false;
         }
+        set_transient(self::UPGRADING, 1, 10 * MINUTE_IN_SECONDS); // Expires, so an interrupted upgrade is retried.
+        $log->write(wp_generate_uuid4(), 'system', 'notice', 'upgrade', null, null, 'v' . self::VERSION, null, self::run());
+        update_option(self::VERSION_OPTION, self::VERSION);
+        delete_transient(self::UPGRADING);
+
+        return true;
     }
 
     /**
