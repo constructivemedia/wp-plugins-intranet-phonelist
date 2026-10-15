@@ -37,18 +37,21 @@ final class PostTypes
     ];
 
     /**
-     * JWH Club levels, in page order. Set by hand on each staff member (not from HR: service can have breaks).
+     * JWH Club: a taxonomy on staff, set by hand on each staff member (not from HR: service can have breaks).
      * Leavers drop off with their record; retired Lifetime members are added with the 'intranet_phonelist_club' filter.
      */
+    public const CLUB_TAXONOMY = self::PREFIX . 'club';
+
+    /** The levels created if the taxonomy is empty (slug => [name, description]), in page order. */
     public const CLUB = [
-        'lifetime' => 'Lifetime Club',
-        '40' => '40 Year Club',
-        '35' => '35 Year Club',
-        '30' => '30 Year Club',
-        '25' => '25 Year Club',
-        '20' => '20 Year Club',
-        '15' => '15 Year Club',
-        '10' => '10 Year Club',
+        'lifetime-club' => ['Lifetime Club', 'Our lifetime club members.'],
+        '40-year-club' => ['40 Year Club', 'Celebrating 40 years with JWH Group.'],
+        '35-year-club' => ['35 Year Club', 'Celebrating 35 years with JWH Group.'],
+        '30-year-club' => ['30 Year Club', 'Celebrating 30 years with JWH Group.'],
+        '25-year-club' => ['25 Year Club', 'Celebrating 25 years with JWH Group.'],
+        '20-year-club' => ['20 Year Club', 'Celebrating 20 years with JWH Group.'],
+        '15-year-club' => ['15 Year Club', 'Celebrating 15 years with JWH Group.'],
+        '10-year-club' => ['10 Year Club', 'Celebrating 10 years with JWH Group.'],
     ];
 
     /** HR fields kept out of the log: it records that they changed, never their values. */
@@ -203,6 +206,29 @@ final class PostTypes
                 'capabilities' => $type === self::COMPANY ? $adminOnly : $syncedOnly,
             ]);
         }
+
+        register_taxonomy(self::CLUB_TAXONOMY, self::STAFF, [
+            'labels' => ['name' => 'JWH Club', 'singular_name' => 'Club Level', 'add_new_item' => 'Add New Club Level', 'search_items' => 'Search Club Levels'],
+            'public' => false,
+            'show_ui' => true,
+            'show_in_menu' => false, // Added to the Phonelist menu by registerMenu().
+            'show_admin_column' => true,
+            'meta_box_cb' => false, // Set with the JWH Club field in the staff sidebar.
+            'capabilities' => array_fill_keys(['manage_terms', 'edit_terms', 'delete_terms', 'assign_terms'], self::CAPABILITY),
+        ]);
+    }
+
+    /**
+     * Creates the standard levels once, while the taxonomy is empty; after that they're managed under Phonelist → JWH Club.
+     */
+    public static function seedClub(): void
+    {
+        if (get_terms(['taxonomy' => self::CLUB_TAXONOMY, 'hide_empty' => false, 'fields' => 'ids', 'number' => 1])) {
+            return;
+        }
+        foreach (self::CLUB as $slug => [$name, $description]) {
+            wp_insert_term($name, self::CLUB_TAXONOMY, ['slug' => $slug, 'description' => $description]);
+        }
     }
 
     /**
@@ -212,7 +238,10 @@ final class PostTypes
     public function registerMenu(): void
     {
         add_menu_page('Phonelist', 'Phonelist', self::CAPABILITY, self::MENU, '', 'dashicons-phone', 26);
-        add_action('admin_menu', fn () => remove_submenu_page(self::MENU, self::MENU), 99);
+        add_action('admin_menu', function (): void {
+            remove_submenu_page(self::MENU, self::MENU);
+            add_submenu_page(self::MENU, 'JWH Club', 'JWH Club', self::CAPABILITY, 'edit-tags.php?taxonomy=' . self::CLUB_TAXONOMY . '&amp;post_type=' . self::STAFF); // &amp; as WordPress writes it, so the item highlights.
+        }, 99);
     }
 
     public function registerFields(): void
@@ -264,7 +293,7 @@ final class PostTypes
             'position' => 'side',
         ]);
 
-        // JWH Club: set by hand, never by the sync.
+        // JWH Club: set by hand, never by the sync. Saved as the staff member's club term.
         acf_add_local_field_group([
             'key' => 'group_iphl_staff_club',
             'title' => 'JWH Club',
@@ -272,13 +301,31 @@ final class PostTypes
                 'key' => 'field_iphl_staff_club',
                 'name' => 'club',
                 'label' => 'Club',
-                'type' => 'select',
-                'choices' => self::CLUB,
+                'type' => 'taxonomy',
+                'taxonomy' => self::CLUB_TAXONOMY,
+                'field_type' => 'select',
                 'allow_null' => 1,
-                'return_format' => 'value',
+                'add_term' => 0,
+                'save_terms' => 1,
+                'load_terms' => 1,
+                'return_format' => 'id',
             ]],
             'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => self::STAFF]]],
             'position' => 'side',
+        ]);
+
+        acf_add_local_field_group([
+            'key' => 'group_iphl_club_level',
+            'title' => 'Club Level',
+            'fields' => [[
+                'key' => 'field_iphl_club_logo',
+                'name' => 'logo',
+                'label' => 'Club Logo',
+                'type' => 'image',
+                'return_format' => 'id',
+                'preview_size' => 'thumbnail',
+            ]],
+            'location' => [[['param' => 'taxonomy', 'operator' => '==', 'value' => self::CLUB_TAXONOMY]]],
         ]);
 
         // Staff links, stored by the sync so Admin Columns and queries can use them. Hidden in the editor

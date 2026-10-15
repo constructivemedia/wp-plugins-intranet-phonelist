@@ -32,6 +32,7 @@ final class ClubCommand
             WP_CLI::error("Can't read {$args[0]}.");
         }
         $dryRun = !empty($options['dry-run']);
+        PostTypes::seedClub();
 
         $index = self::staffIndex();
         $levels = array_keys(PostTypes::CLUB);
@@ -42,6 +43,10 @@ final class ClubCommand
         $spelling = [];
 
         foreach (self::parse($text) as $level => $members) {
+            if (!term_exists($level, PostTypes::CLUB_TAXONOMY)) {
+                WP_CLI::warning("No '$level' level under Phonelist → JWH Club; its " . count($members) . ' members were skipped.');
+                continue;
+            }
             foreach ($members as [$name, $company]) {
                 // Preferred names first: 'Julian Walter' is Julian (preferred), not Jay (legal first name Julian).
                 // Then the email (first.last@…), for surnames holding a business name.
@@ -73,20 +78,20 @@ final class ClubCommand
                 if (isset($chosen[$postId])) {
                     // Listed twice: keep the higher level (earlier in PostTypes::CLUB).
                     $repeats[] = "$name — {$chosen[$postId][0]} and $level";
-                    if (array_search((string) $level, $levels, true) > array_search((string) $chosen[$postId][0], $levels, true)) {
+                    if (array_search($level, $levels, true) > array_search($chosen[$postId][0], $levels, true)) {
                         continue;
                     }
                 }
-                $chosen[$postId] = [(string) $level, $name];
+                $chosen[$postId] = [$level, $name];
             }
         }
 
         $changed = 0;
         foreach ($chosen as $postId => [$level]) {
-            if ((string) get_post_meta($postId, 'club', true) !== $level) {
+            if (wp_get_object_terms($postId, PostTypes::CLUB_TAXONOMY, ['fields' => 'slugs']) !== [$level]) {
                 $changed++;
                 if (!$dryRun) {
-                    update_field('field_iphl_staff_club', $level, $postId);
+                    wp_set_object_terms($postId, $level, PostTypes::CLUB_TAXONOMY);
                 }
             }
         }
@@ -107,10 +112,10 @@ final class ClubCommand
     }
 
     /**
-     * The club page text → level => [[name, company], …]. Headings: 'Lifetime Club', 'N Year Club'.
+     * The club page text → level slug => [[name, company], …]. Headings: 'Lifetime Club', 'N Year Club'.
      * Description lines ('Our …', 'Celebrating …') are skipped; the rest alternate name, company.
      *
-     * @return array<string|int, array<array{0: string, 1: string}>>
+     * @return array<string, array<array{0: string, 1: string}>>
      */
     public static function parse(string $text): array
     {
@@ -122,8 +127,8 @@ final class ClubCommand
             if ($line === '' || preg_match('/^(Our |Celebrating )/i', $line)) {
                 continue;
             }
-            if (preg_match('/^(?:(Lifetime)|(\d+) Year) Club$/i', $line, $match)) {
-                $level = $match[1] !== '' ? 'lifetime' : $match[2];
+            if (preg_match('/^(Lifetime|\d+ Year) Club$/i', $line)) {
+                $level = strtolower(str_replace(' ', '-', $line)); // The level's slug: '40 Year Club' → '40-year-club'.
                 $pending = null;
                 continue;
             }

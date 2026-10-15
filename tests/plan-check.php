@@ -117,7 +117,7 @@ assert(CompanyMap::companyFor('NEW', 'Brand New Division', false, []) === 'Brand
 
 // Club list import: level headings, description lines skipped, then name/company pairs; names compared loosely.
 $list =ClubCommand::parse("Lifetime Club\nOur lifetime club members.\n\nJane Citizen\nJWH Group\n\n40 Year Club\nCelebrating 40 years with JWH Group.\n\n\nAnn Smith-Jones\nPlunkett Homes\nMaria Santos Lima\nWA Country Builders, Drafting\n");
-assert($list === ['lifetime' => [['Jane Citizen', 'JWH Group']], '40' => [['Ann Smith-Jones', 'Plunkett Homes'], ['Maria Santos Lima', 'WA Country Builders, Drafting']]]);
+assert($list === ['lifetime-club' => [['Jane Citizen', 'JWH Group']], '40-year-club' => [['Ann Smith-Jones', 'Plunkett Homes'], ['Maria Santos Lima', 'WA Country Builders, Drafting']]]);
 assert(ClubCommand::key('Dianne O’Malley') === ClubCommand::key("dianne o'malley") && ClubCommand::key('Derrick D’Souza') === 'derrickdsouza');
 
 // Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.

@@ -5,6 +5,7 @@ namespace ConstructiveMedia\IntranetPhonelist;
 use DateTimeImmutable;
 use WP_Post;
 use WP_Query;
+use WP_Term;
 
 /**
  * Public API for theme templates.
@@ -52,23 +53,36 @@ final class Phonelist
     }
 
     /**
-     * The JWH Club page: levels in order (Lifetime, 40 … 10), each with its members sorted by name. Empty levels are left out.
-     * Add people with no staff record (e.g. retired Lifetime members) with the 'intranet_phonelist_club' filter:
+     * The JWH Club page: levels in order (Lifetime, 40 … 10, then any others by name), each with its members sorted by name.
+     * Empty levels are left out. Add people with no staff record (e.g. retired Lifetime members) with the 'intranet_phonelist_club' filter:
      *
      *     add_filter('intranet_phonelist_club', function (array $club): array {
-     *         $club['lifetime']['members'][] = Staff::manual('John Monkhouse', company: 'JWH Group');
+     *         $club['lifetime-club']['members'][] = Staff::manual('John Monkhouse', company: 'JWH Group');
      *         return $club;
      *     });
      *
-     * @return array<string|int, array{title: string, members: Staff[]}> Keyed by level ('lifetime', 40 … 10).
+     * @return array<string, array{title: string, description: string, logo: ?string, members: Staff[]}> Keyed by level slug ('lifetime-club', '40-year-club' …).
      */
     public static function club(): array
     {
-        $club = array_map(fn (string $title): array => ['title' => $title, 'members' => []], PostTypes::CLUB);
+        $order = array_flip(array_keys(PostTypes::CLUB));
+        $terms = get_terms(['taxonomy' => PostTypes::CLUB_TAXONOMY, 'hide_empty' => false]);
+        usort($terms, fn (WP_Term $a, WP_Term $b): int => [$order[$a->slug] ?? PHP_INT_MAX, $a->name] <=> [$order[$b->slug] ?? PHP_INT_MAX, $b->name]);
+
+        $club = [];
+        foreach ($terms as $term) {
+            $logo = (int) get_term_meta($term->term_id, 'logo', true);
+            $club[$term->slug] = [
+                'title' => $term->name,
+                'description' => $term->description,
+                'logo' => $logo ? (wp_get_attachment_image_url($logo, 'full') ?: null) : null,
+                'members' => [],
+            ];
+        }
         foreach (self::staffPosts() as $post) {
-            $level = (string) get_post_meta($post->ID, 'club', true);
-            if (isset($club[$level])) {
-                $club[$level]['members'][] = self::toStaff($post);
+            $person = self::toStaff($post);
+            if (isset($club[$person->club])) {
+                $club[$person->club]['members'][] = $person;
             }
         }
 
@@ -150,6 +164,7 @@ final class Phonelist
         $meta = fn (string $key): string => (string) get_post_meta($post->ID, $key, true);
         $division = self::divisions()[$meta('div_code')] ?? ['name' => '', 'company' => ''];
         $photoId = (int) get_post_thumbnail_id($post->ID);
+        $club = get_the_terms($post, PostTypes::CLUB_TAXONOMY); // Cached by the staff query.
 
         return new Staff(
             id: $meta('id'),
@@ -170,7 +185,7 @@ final class Phonelist
             daysUntil: $daysUntil,
             photoId: $photoId ?: null,
             photoUrl: $photoId ? (wp_get_attachment_image_url($photoId, 'full') ?: null) : null,
-            club: $meta('club') ?: null,
+            club: is_array($club) ? $club[0]->slug : null,
         );
     }
 

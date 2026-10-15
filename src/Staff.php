@@ -36,7 +36,7 @@ final class Staff implements JsonSerializable
         public readonly ?int $photoId = null,
         /** Full-size photo URL. Null without a photo. */
         public readonly ?string $photoUrl = null,
-        /** JWH Club level: 'lifetime', '40', '35' … '10' (see PostTypes::CLUB), or null. */
+        /** JWH Club level slug: 'lifetime-club', '40-year-club' … '10-year-club', or null. */
         public readonly ?string $club = null,
     ) {
     }

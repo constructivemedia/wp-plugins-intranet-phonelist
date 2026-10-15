@@ -135,13 +135,13 @@ Phonelist::staff(division: 'JWH', tag: '20');  // exact DIV_CODE and department 
 
 ### JWH Club
 
-Each staff member has a **JWH Club** field in the editor sidebar: 10, 15, 20, 25, 30, 35 or 40 years, or Lifetime.
+Club levels are a taxonomy, managed under **Phonelist → JWH Club** (name, description and Club Logo). The standard levels (Lifetime, 40, 35 … 10 Year Club) are created the first time it's empty. Each staff member's level is set with the **JWH Club** dropdown in the editor sidebar.
 - **Set by hand.** It isn't worked out from HR data, because service can have breaks. The sync never changes it.
 - **Leavers drop off** with their record, and anyone who comes back starts again.
 
 ```php
-foreach (Phonelist::club() as $level => $group) {   // 'lifetime', 40, 35 … 10, in page order; empty levels left out
-    echo "<h2>{$group['title']}</h2>";               // e.g. '15 Year Club'
+foreach (Phonelist::club() as $level => $group) {   // 'lifetime-club', '40-year-club' … in page order; empty levels left out
+    echo "<h2>{$group['title']}</h2>";               // e.g. '15 Year Club'; also 'description' and 'logo' (image URL or null)
     foreach ($group['members'] as $person) {         // Staff objects, sorted by name
         echo "{$person->name} — {$person->company}";
     }
@@ -159,8 +159,8 @@ People with no staff record, such as retired Lifetime members, are added in the 
 use ConstructiveMedia\IntranetPhonelist\Staff;
 
 add_filter('intranet_phonelist_club', function (array $club): array {
-    $club['lifetime']['members'][] = Staff::manual('John Monkhouse', company: 'JWH Group');
-    $club['lifetime']['members'][] = Staff::manual('Ian Holloway', company: 'JWH Group');
+    $club['lifetime-club']['members'][] = Staff::manual('John Monkhouse', company: 'JWH Group');
+    $club['lifetime-club']['members'][] = Staff::manual('Ian Holloway', company: 'JWH Group');
     return $club;
 });
 ```
@@ -174,7 +174,7 @@ add_filter('intranet_phonelist_club', function (array $club): array {
 - `divisionCode`, `division`, `company`
 - `tag` (department code), `tagDescription`
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
-- `club` (`'lifetime'`, `'40'` … `'10'`, or null)
+- `club` (the level's slug: `'lifetime-club'`, `'40-year-club'` … `'10-year-club'`, or null)
 - `birthday`, `daysUntil` (from `birthdays()` only)
 
 DOB, home phone and other HR fields are never exposed.
@@ -187,7 +187,7 @@ GET /wp-json/phonelist/v1/club
 ```
 
 - **`/staff`** is the same as `Phonelist::staff()`, returned as JSON.
-- **`/club`** is `Phonelist::club()`, returned as a list in page order: `[{"level": "lifetime", "title": "Lifetime Club", "members": [...]}, {"level": "40", …}]`. The filter applies here too.
+- **`/club`** is `Phonelist::club()`, returned as a list in page order: `[{"level": "lifetime-club", "title": "Lifetime Club", "description": "…", "logo": "https://…", "members": [...]}, {"level": "40-year-club", …}]`. The filter applies here too.
 
 Any logged-in user can call them:
 - **Intranet pages:** the login cookie plus an `X-WP-Nonce` header (`wp_create_nonce('wp_rest')`).

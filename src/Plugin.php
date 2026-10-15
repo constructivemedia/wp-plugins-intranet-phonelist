@@ -30,6 +30,7 @@ final class Plugin
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
+        add_action('admin_init', [PostTypes::class, 'seedClub']);
         add_action('admin_menu', [$postTypes, 'registerMenu'], 9);
         add_action('acf/include_fields', [$postTypes, 'registerFields']);
         $postTypes->lock();

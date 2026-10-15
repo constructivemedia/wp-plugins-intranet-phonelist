@@ -37,7 +37,7 @@ final class StaffController
     }
 
     /**
-     * Phonelist::club() as a list in page order: JSON objects with numeric keys ("40", "35") would be reordered by clients.
+     * Phonelist::club() as a list, so page order survives JSON clients.
      */
     public function club(): WP_REST_Response
     {
