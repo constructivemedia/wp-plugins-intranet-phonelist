@@ -3,7 +3,9 @@
 // Checks inside WordPress. Everything it creates uses ids starting 'test-' (or titles starting 'Test ') and is deleted
 // at the end, even on failure.
 
+use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 use ConstructiveMedia\IntranetPhonelist\Plugin;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Schema;
@@ -114,6 +116,26 @@ try {
     update_post_meta($s1, 'division', 0);
     Plugin::relations()->relinkAll();
     assert($link($s1, 'division') === $in->postId('divisions', 'test-RD'));
+
+    // Photos: from the folder on create only; after that only a new photo_url replaces it; a failed download doesn't fail the record.
+    $folder = get_temp_dir() . 'test-photos-' . wp_generate_password(6, false);
+    wp_mkdir_p($folder);
+    $image = imagecreatetruecolor(1, 1);
+    imagejpeg($image, "$folder/jane_test_test-pd.jpg");
+    $photos = new Photos($folder, $log);
+    $withPhotos = new Ingestor($log, $wpdb, Plugin::relations(), $photos);
+    $withPhotos->put('staff', 'test-p1', $jane + ['division_id' => 'test-PD', 'updated_at' => $t1], 'test-run', 'api');
+    $p1 = $withPhotos->postId('staff', 'test-p1');
+    assert(has_post_thumbnail($p1));
+    wp_delete_attachment(get_post_thumbnail_id($p1), true);                                    // removed by hand
+    assert($withPhotos->put('staff', 'test-p1', $jane + ['division_id' => 'test-PD', 'position' => 'New', 'updated_at' => $t2], 'test-run', 'api')->result === 'updated');
+    assert(!has_post_thumbnail($p1));                                                           // not re-added
+    $failed = $withPhotos->patch('staff', 'test-p1', ['photo_url' => 'https://127.0.0.1:1/x.jpg', 'updated_at' => $t2], 'test-run', 'api');
+    assert($failed->result === 'updated' && !has_post_thumbnail($p1));
+    assert($photos->afterWrite($p1, ['photo_url' => 'https://127.0.0.1:1/x.jpg'], false) === 'failed');
+    assert($photos->afterWrite($p1, ['photo_url' => null], false) === null);
+    array_map('unlink', glob("$folder/*"));
+    rmdir($folder);
 } finally {
     $cleanUp();
 }

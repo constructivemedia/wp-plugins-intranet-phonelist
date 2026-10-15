@@ -6,13 +6,9 @@ use ConstructiveMedia\IntranetPhonelist\Admin\Relationships;
 use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
-use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
-use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
-use ConstructiveMedia\IntranetPhonelist\Sync\OracleSource;
-use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
-use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 
 /**
  * Wires the plugin into WordPress. The only place objects are built.
@@ -45,10 +41,8 @@ final class Plugin
         $log->maybeUpgrade();
         self::$relations = new Relations($log, $wpdb);
         self::$relations->register();
-        self::$ingestor = new Ingestor($log, $wpdb, self::$relations);
-        $photos = Photos::fromConstants();
-        $companies = new CompanyMap();
-        $synchronizer = new Synchronizer(OracleSource::fromConstants(), $photos, $companies, $log, $wpdb);
+        $photos = Photos::fromConstants($log);
+        self::$ingestor = new Ingestor($log, $wpdb, self::$relations, $photos);
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
@@ -57,12 +51,6 @@ final class Plugin
         add_action('acf/include_fields', [$postTypes, 'registerFields']);
         $postTypes->lock();
         (new StaffController())->register();
-
-        // Sync Now runs here, via WP-Cron, so the browser never waits on a long sync.
-        add_action(Synchronizer::BACKGROUND_HOOK, function (int $userId = 0) use ($synchronizer): void {
-            wp_set_current_user($userId); // Logged as the user who clicked Sync Now.
-            $synchronizer->run('manual');
-        });
         register_activation_hook($pluginFile, [$log, 'install']);
 
         // Daily housekeeping: expired log entries.
@@ -72,11 +60,10 @@ final class Plugin
         }
 
         if (is_admin()) {
-            (new SettingsPage($synchronizer, $photos, $companies, $log))->register();
+            (new SettingsPage($photos, $log))->register();
             (new Relationships())->register();
         }
         if (defined('WP_CLI') && WP_CLI) {
-            (new SyncCommand($synchronizer))->register();
             (new ClubCommand())->register();
         }
     }

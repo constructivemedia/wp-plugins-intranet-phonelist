@@ -12,8 +12,7 @@ use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Schema;
 use ConstructiveMedia\IntranetPhonelist\Staff;
-use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
-use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 
 // Division titles: title case, tidy brackets, known acronyms kept.
 foreach ([
@@ -28,33 +27,17 @@ foreach ([
     assert(PostTypes::prettyName($raw) === $pretty, "$raw → " . PostTypes::prettyName($raw));
 }
 
-// Company mapping: one company per line, codes split by commas/spaces, blank lines ignored, round-trips.
-$map = CompanyMap::parse("WA Country Builders: GTN, BSN,BNB  ALB\n\nJWH Group: JWH, JIT\nJWH Group: JIT, CME\nNo Codes Yet:\n");
-assert($map === ['WA Country Builders' => ['GTN', 'BSN', 'BNB', 'ALB'], 'JWH Group' => ['JWH', 'JIT', 'CME'], 'No Codes Yet' => []]);
-assert(CompanyMap::parse(CompanyMap::format($map)) === $map);
-assert(CompanyMap::parse('') === []);
-$byDivision = CompanyMap::byDivision(['A' => ['X', 'Y'], 'B' => ['Y', 'Z']]);
-assert($byDivision['divisions'] === ['X' => 'A', 'Y' => 'A', 'Z' => 'B']); // first listing wins
-assert($byDivision['conflicts'] === ['Y' => ['A', 'B']]);
-
-// Every division gets a company: mapped, else kept if set by hand, else one named after the division.
-$mapped = ['JIT' => 'JWH Group'];
-assert(CompanyMap::companyFor('JIT', 'JWH IT', true, $mapped) === 'JWH Group');                       // mapping wins over a hand-set one
-assert(CompanyMap::companyFor('RBC', 'Rural Building Company', true, $mapped) === null);              // set by hand, not mapped: keep
-assert(CompanyMap::companyFor('RBC', 'Rural Building Company', false, $mapped) === 'Rural Building Company');
-assert(CompanyMap::companyFor('NEW', 'Brand New Division', false, []) === 'Brand New Division');      // works with no mapping at all
-
 // Club list import: level headings, description lines skipped, then name/company pairs; names compared loosely.
 $list =ClubCommand::parse("Lifetime Club\nOur lifetime club members.\n\nJane Citizen\nJWH Group\n\n40 Year Club\nCelebrating 40 years with JWH Group.\n\n\nAnn Smith-Jones\nPlunkett Homes\nMaria Santos Lima\nWA Country Builders, Drafting\n");
 assert($list === ['lifetime-club' => [['Jane Citizen', 'JWH Group']], '40-year-club' => [['Ann Smith-Jones', 'Plunkett Homes'], ['Maria Santos Lima', 'WA Country Builders, Drafting']]]);
 assert(ClubCommand::key('Dianne O’Malley') === ClubCommand::key("dianne o'malley") && ClubCommand::key('Derrick D’Souza') === 'derrickdsouza');
 
 // Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.
-$photoRow = fn (string $pref, string $first, string $last, string $div = 'JWH') => ['PREF_NAME' => $pref, 'NAME_FIRST' => $first, 'NAME_LAST_CO' => $last, 'DIV_CODE' => $div];
-assert(Photos::candidates($photoRow('Janey', 'Jane A', 'Citizen')) === ['janey_citizen_jwh', 'jane_citizen_jwh', 'janea_citizen_jwh']);
-assert(Photos::candidates($photoRow('', 'Jane', 'Citizen')) === ['jane_citizen_jwh']);
-assert(Photos::candidates($photoRow('Ann', 'Ann', "O'Shea-Smith"))[0] === 'ann_oshea-smith_jwh');
-assert(Photos::candidates($photoRow('Maria', 'Maria', 'Santos Lima', 'PHM'))[0] === 'maria_santoslima_phm');
+assert(Photos::candidates('Janey', 'Jane A', 'Citizen', 'JWH') === ['janey_citizen_jwh', 'jane_citizen_jwh', 'janea_citizen_jwh']);
+assert(Photos::candidates(null, 'Jane', 'Citizen', 'JWH') === ['jane_citizen_jwh']);
+assert(Photos::candidates('Ann', 'Ann', "O'Shea-Smith", 'JWH')[0] === 'ann_oshea-smith_jwh');
+assert(Photos::candidates('Maria', 'Maria', 'Santos Lima', 'PHM')[0] === 'maria_santoslima_phm');
+assert(Photos::candidates('Jane', 'Jane', 'Citizen', null) === []);                       // no division, no match
 assert(Photos::fileKey('jane_citizen_jwh.jpg') === 'jane_citizen_jwh');
 assert(Photos::fileKey('Jane_Citizen_JWH.JPEG') === 'jane_citizen_jwh');
 assert(Photos::fileKey('jane_citizen_jwh.jpg.jpg') === 'jane_citizen_jwh');

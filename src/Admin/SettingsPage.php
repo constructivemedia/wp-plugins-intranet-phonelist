@@ -3,10 +3,8 @@
 namespace ConstructiveMedia\IntranetPhonelist\Admin;
 
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
-use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
-use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
-use ConstructiveMedia\IntranetPhonelist\Sync\Synchronizer;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 
 /**
  * Settings → Phonelist: Sync (last result, Sync Now), Logs (filterable audit log with payloads),
@@ -16,13 +14,11 @@ final class SettingsPage
 {
     private const SLUG = 'intranet-phonelist';
     private const PER_PAGE = 100;
-    private const TABS = ['sync' => 'Sync', 'logs' => 'Logs', 'companies' => 'Companies', 'photos' => 'Photos'];
+    private const TABS = ['logs' => 'Logs', 'photos' => 'Photos'];
     private const LEVEL_COLOURS = ['error' => '#d63638', 'warning' => '#996800', 'notice' => '#2271b1', 'info' => '#50575e', 'debug' => '#8c8f94'];
 
     public function __construct(
-        private readonly Synchronizer $synchronizer,
         private readonly Photos $photos,
-        private readonly CompanyMap $companies,
         private readonly Log $log,
     ) {
     }
@@ -30,46 +26,7 @@ final class SettingsPage
     public function register(): void
     {
         add_action('admin_menu', fn () => add_options_page('Phonelist', 'Phonelist', 'manage_options', self::SLUG, [$this, 'render']));
-        add_action('admin_post_intranet_phonelist_sync', [$this, 'handleSync']);
         add_action('admin_post_intranet_phonelist_delete_logs', [$this, 'handleDeleteLogs']);
-        add_action('admin_post_intranet_phonelist_save_companies', [$this, 'handleSaveCompanies']);
-        add_action('admin_post_intranet_phonelist_clear_lock', [$this, 'handleClearLock']);
-    }
-
-    public function handleSaveCompanies(): void
-    {
-        $this->authorize('intranet_phonelist_save_companies');
-        $this->companies->save(CompanyMap::parse(sanitize_textarea_field(wp_unslash($_POST['companies'] ?? ''))));
-        $result = $this->synchronizer->applyCompanyMap();
-        $this->redirect([
-            'tab' => 'companies',
-            'notice' => $result['status'] === 'failed' ? 'companies_busy' : 'companies_saved',
-            'created' => $result['counts']['created'],
-            'updated' => $result['counts']['updated'],
-        ]);
-    }
-
-    /**
-     * Queue the sync in the background (WP-Cron) and return straight away; the Sync tab shows its progress.
-     */
-    public function handleSync(): void
-    {
-        $this->authorize('intranet_phonelist_sync');
-        if ($this->synchronizer->running()) {
-            $this->redirect(['notice' => 'already_running']);
-        }
-        if (!wp_next_scheduled(Synchronizer::BACKGROUND_HOOK, [get_current_user_id()])) {
-            wp_schedule_single_event(time(), Synchronizer::BACKGROUND_HOOK, [get_current_user_id()]);
-        }
-        spawn_cron();
-        $this->redirect(['notice' => 'sync_started']);
-    }
-
-    public function handleClearLock(): void
-    {
-        $this->authorize('intranet_phonelist_clear_lock');
-        $this->synchronizer->clearLock();
-        $this->redirect(['notice' => 'lock_cleared']);
     }
 
     public function handleDeleteLogs(): void
@@ -81,14 +38,9 @@ final class SettingsPage
 
     public function render(): void
     {
-        $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'sync';
+        $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'logs';
         $notices = [
-            'sync_started' => ['success', 'Sync started in the background. Progress shows below; this page refreshes until it finishes.'],
-            'already_running' => ['warning', 'A sync is already running.'],
-            'lock_cleared' => ['success', 'Lock cleared. You can start a new sync.'],
             'logs_deleted' => ['success', sprintf('Deleted %d log entries.', absint($_GET['count'] ?? 0))],
-            'companies_saved' => ['success', sprintf('Mapping saved: %d companies created, %d divisions updated.', absint($_GET['created'] ?? 0), absint($_GET['updated'] ?? 0))],
-            'companies_busy' => ['warning', 'Mapping saved. A sync is running, so it will be applied by that sync or the next one.'],
         ];
         $notice = $notices[$_GET['notice'] ?? ''] ?? null;
         ?>
@@ -96,7 +48,7 @@ final class SettingsPage
             <h1>Phonelist</h1>
             <nav class="nav-tab-wrapper">
                 <?php foreach (self::TABS as $name => $label) : ?>
-                    <a href="<?= esc_url($this->url($name === 'sync' ? [] : ['tab' => $name])) ?>" class="nav-tab <?= $tab === $name ? 'nav-tab-active' : '' ?>"><?= esc_html($label) ?></a>
+                    <a href="<?= esc_url($this->url($name === 'logs' ? [] : ['tab' => $name])) ?>" class="nav-tab <?= $tab === $name ? 'nav-tab-active' : '' ?>"><?= esc_html($label) ?></a>
                 <?php endforeach; ?>
             </nav>
 
@@ -105,77 +57,10 @@ final class SettingsPage
             <?php endif; ?>
 
             <?php match ($tab) {
-                'companies' => $this->renderCompanies(),
                 'photos' => $this->renderPhotos(),
-                'logs' => $this->renderLogs(),
-                default => $this->renderSync(),
+                default => $this->renderLogs(),
             }; ?>
         </div>
-        <?php
-    }
-
-    private function renderCompanies(): void
-    {
-        $map = $this->companies->get();
-        ['divisions' => $mapped, 'conflicts' => $conflicts] = CompanyMap::byDivision($map);
-
-        // Synced divisions by code, with their current company and staff count.
-        $divisions = [];
-        foreach (get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']) as $division) {
-            $code = (string) get_post_meta($division->ID, PostTypes::SOURCE_ID, true);
-            $divisions[$code] = $division;
-        }
-        $unmapped = array_diff_key($divisions, $mapped);
-        ?>
-        <p>One company per line, then its division codes: <code>WA Country Builders: GTN, BSN, BNB, ALB, CDR</code>.
-            Saving creates any missing companies and sets each listed division's Company; every full sync re-applies it.
-            A division not listed keeps a company set by hand on the division; otherwise it gets a company named after itself, so everyone has a company.</p>
-
-        <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>">
-            <input type="hidden" name="action" value="intranet_phonelist_save_companies">
-            <?php wp_nonce_field('intranet_phonelist_save_companies'); ?>
-            <textarea name="companies" rows="<?= max(6, count($map) + 2) ?>" class="large-text code" style="max-width:900px"><?= esc_textarea(CompanyMap::format($map)) ?></textarea>
-            <?php submit_button('Save and apply', 'primary', 'submit', false); ?>
-        </form>
-
-        <?php if ($conflicts) : ?>
-            <div class="notice notice-warning inline"><p>Listed under more than one company (the first is used):
-                <?= esc_html(implode(', ', array_map(fn (string $code, array $names): string => "$code (" . implode(' / ', $names) . ')', array_keys($conflicts), $conflicts))) ?></p></div>
-        <?php endif; ?>
-
-        <?php if ($map) : ?>
-            <h2>Mapping</h2>
-            <table class="widefat striped" style="max-width:900px">
-                <thead><tr><th>Company</th><th>Divisions</th></tr></thead>
-                <tbody>
-                <?php foreach ($map as $company => $codes) : ?>
-                    <tr>
-                        <td><?= esc_html($company) ?></td>
-                        <td>
-                            <?php foreach ($codes as $code) : ?>
-                                <?php if (isset($divisions[$code])) : ?>
-                                    <div><code><?= esc_html($code) ?></code> <a href="<?= esc_url(get_edit_post_link($divisions[$code]->ID)) ?>"><?= esc_html($divisions[$code]->post_title) ?></a></div>
-                                <?php else : ?>
-                                    <div><code><?= esc_html($code) ?></code> <span style="color:#996800">no synced division with this code</span></div>
-                                <?php endif; ?>
-                            <?php endforeach; ?>
-                        </td>
-                    </tr>
-                <?php endforeach; ?>
-                </tbody>
-            </table>
-        <?php endif; ?>
-
-        <?php if ($unmapped) : ?>
-            <h2>Divisions not in the mapping (<?= count($unmapped) ?>)</h2>
-            <ul style="list-style:disc;margin-left:20px">
-                <?php foreach ($unmapped as $code => $division) : ?>
-                    <?php $companyId = (int) get_post_meta($division->ID, 'company', true); ?>
-                    <li><code><?= esc_html((string) $code) ?></code> <a href="<?= esc_url(get_edit_post_link($division->ID)) ?>"><?= esc_html($division->post_title) ?></a>
-                        — <?= $companyId ? esc_html(get_the_title($companyId)) : '<span style="color:#996800">no company</span>' ?></li>
-                <?php endforeach; ?>
-            </ul>
-        <?php endif; ?>
         <?php
     }
 
@@ -197,7 +82,7 @@ final class SettingsPage
         ?>
         <p>
             <?= (int) ($total - count($missing)) ?> of <?= (int) $total ?> staff have a photo.
-            Photos are matched by file name in <code><?= esc_html($this->photos->directory()) ?></code> on each sync.
+            Photos are matched by file name in <code><?= esc_html($this->photos->directory()) ?></code> when a staff member is created, unless Data Hub sends a photo URL.
         </p>
         <?php if (!$missing) : ?>
             <p>Everyone has a photo.</p>
@@ -211,7 +96,7 @@ final class SettingsPage
             <?php foreach ($missing as $person) : ?>
                 <?php
                 $meta = fn (string $key): string => (string) get_post_meta($person->ID, $key, true);
-                $tried = Photos::candidates(['PREF_NAME' => $meta('pref_name'), 'NAME_FIRST' => $meta('name_first'), 'NAME_LAST_CO' => $meta('name_last_co'), 'DIV_CODE' => $meta('div_code')]);
+                $tried = Photos::candidates($meta('preferred_name'), $meta('first_name'), $meta('last_name'), $meta('division_id'));
                 ?>
                 <tr>
                     <td><a href="<?= esc_url(get_edit_post_link($person->ID)) ?>"><?= esc_html($person->post_title) ?></a></td>
@@ -227,68 +112,6 @@ final class SettingsPage
     private function url(array $args = []): string
     {
         return add_query_arg($args, admin_url('options-general.php?page=' . self::SLUG));
-    }
-
-    private function renderSync(): void
-    {
-        $last = get_option(Synchronizer::LAST_SYNC);
-        $counts = !empty($last['run']) ? $this->log->levelCounts($last['run']) : [];
-        ?>
-        <?php if (!function_exists('oci_connect')) : ?>
-            <div class="notice notice-error inline"><p>The <code>oci8</code> PHP extension is not loaded, so sync cannot connect to Oracle.</p></div>
-        <?php endif; ?>
-
-        <h2>Last sync</h2>
-        <p>
-            <?= $last
-                ? esc_html(wp_date('j M Y g:ia', $last['time']) . " ({$last['trigger']}) — {$last['status']}. {$last['message']}")
-                : 'Never.' ?>
-        </p>
-        <?php foreach (['error', 'warning'] as $level) : ?>
-            <?php if (!empty($counts[$level])) : ?>
-                <p>
-                    <?= $this->badge($level) ?> <?= (int) $counts[$level] ?> in the last sync —
-                    <a href="<?= esc_url(add_query_arg(['tab' => 'logs', 'run' => $last['run'], 'level' => $level])) ?>">view</a>
-                </p>
-            <?php endif; ?>
-        <?php endforeach; ?>
-
-        <?php
-        $running = $this->synchronizer->running();
-        $queued = wp_next_scheduled(Synchronizer::BACKGROUND_HOOK, [get_current_user_id()]);
-        ?>
-        <?php if ($running) : ?>
-            <div class="notice notice-info inline">
-                <p>
-                    <span class="spinner is-active" style="float:none;margin:0 6px 0 0"></span>
-                    <strong>Sync running</strong> since <?= esc_html(wp_date('g:i:sa', $running['started'])) ?>:
-                    <?= esc_html($running['step'] ?? 'starting…') ?>
-                    <span style="color:#646970">(last activity <?= esc_html(wp_date('g:i:sa', $running['beat'])) ?>)</span>
-                </p>
-            </div>
-            <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>" onsubmit="return confirm('Only clear the lock if the sync has stopped (e.g. the server was restarted). Clear it?');">
-                <input type="hidden" name="action" value="intranet_phonelist_clear_lock">
-                <?php wp_nonce_field('intranet_phonelist_clear_lock'); ?>
-                <?php submit_button('Clear lock', 'secondary small', 'submit', false); ?>
-            </form>
-        <?php elseif ($queued) : ?>
-            <div class="notice notice-info inline"><p><span class="spinner is-active" style="float:none;margin:0 6px 0 0"></span><strong>Sync queued</strong>, starting…</p>
-                <?php if ($queued < time() - MINUTE_IN_SECONDS) : ?>
-                    <p>It hasn't started after a minute, so WP-Cron may not be running on this server (it needs to reach its own <code>wp-cron.php</code>).
-                        Run <code>wp phonelist sync</code> instead, or have the server's cron call <code>wp-cron.php</code>.</p>
-                <?php endif; ?>
-            </div>
-        <?php else : ?>
-            <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>">
-                <input type="hidden" name="action" value="intranet_phonelist_sync">
-                <?php wp_nonce_field('intranet_phonelist_sync'); ?>
-                <?php submit_button('Sync Now', 'primary', 'submit', false); ?>
-            </form>
-        <?php endif; ?>
-        <?php if ($running || $queued) : ?>
-            <script>setTimeout(() => location.replace(location.href.replace(/&notice=[^&]*/, '')), 5000);</script>
-        <?php endif; ?>
-        <?php
     }
 
     private function renderLogs(): void
