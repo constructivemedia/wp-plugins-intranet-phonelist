@@ -7,6 +7,7 @@ use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 
@@ -19,6 +20,7 @@ final class Plugin
 
     private static Ingestor $ingestor;
     private static Relations $relations;
+    private static Jobs $jobs;
 
     /**
      * The one Ingestor, for the API, jobs, the Oracle import and tests/wp-check.php.
@@ -33,6 +35,11 @@ final class Plugin
         return self::$relations;
     }
 
+    public static function jobs(): Jobs
+    {
+        return self::$jobs;
+    }
+
     public static function boot(string $pluginFile): void
     {
         global $wpdb;
@@ -43,6 +50,8 @@ final class Plugin
         self::$relations->register();
         $photos = Photos::fromConstants($log);
         self::$ingestor = new Ingestor($log, $wpdb, self::$relations, $photos);
+        self::$jobs = new Jobs(self::$ingestor, self::$relations, $log, $wpdb);
+        self::$jobs->register();
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
@@ -53,8 +62,9 @@ final class Plugin
         (new StaffController())->register();
         register_activation_hook($pluginFile, [$log, 'install']);
 
-        // Daily housekeeping: expired log entries.
+        // Daily housekeeping: expired log entries and finished jobs.
         add_action(self::DAILY_HOOK, [$log, 'prune']);
+        add_action(self::DAILY_HOOK, [self::$jobs, 'prune']);
         if (!wp_next_scheduled(self::DAILY_HOOK)) {
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
         }

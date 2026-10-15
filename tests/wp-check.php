@@ -25,6 +25,14 @@ $cleanUp = function () use ($wpdb, $logTable): void {
         wp_delete_post((int) $id, true);
     }
     $wpdb->query("DELETE FROM $logTable WHERE run_id LIKE 'test-%' OR source_id LIKE 'test-%' OR label LIKE 'Test %'");
+    if (method_exists(Plugin::class, 'jobs')) {
+        $jobsTable = $wpdb->prefix . 'iphl_jobs';
+        $testJobs = $wpdb->get_col("SELECT id FROM $jobsTable WHERE idempotency_key LIKE 'test-%' OR payload LIKE '%\"test-%'");
+        foreach ($testJobs as $jobId) {
+            $wpdb->query($wpdb->prepare("DELETE FROM $logTable WHERE run_id = %s", $jobId));
+            $wpdb->delete($jobsTable, ['id' => $jobId]);
+        }
+    }
 };
 
 $cleanUp();
@@ -136,6 +144,40 @@ try {
     assert($photos->afterWrite($p1, ['photo_url' => null], false) === null);
     array_map('unlink', glob("$folder/*"));
     rmdir($folder);
+
+    // Jobs: a batch resolves out-of-order references, repeats by idempotency key, and a crashed job is resumed.
+    $jobs = Plugin::jobs();
+    $job = $jobs->create('batch', null, [
+        ['op' => 'put', 'type' => 'staff', 'id' => 'test-b1', 'data' => $jane + ['division_id' => 'test-BD', 'updated_at' => $t1]],
+        ['op' => 'put', 'type' => 'divisions', 'id' => 'test-BD', 'data' => ['name' => 'Test Batch Division', 'updated_at' => $t1]],
+        ['op' => 'put', 'type' => 'staff', 'data' => $jane + ['updated_at' => $t1]],                                  // no id
+    ], 'test-key-1', 'api');
+    assert(!$job['existing'] && $jobs->create('batch', null, [], 'test-key-1', 'api')['id'] === $job['id']);
+    $jobs->process($job['id']);
+    $done = $jobs->get($job['id']);
+    assert($done['status'] === 'done' && $done['total'] === 3 && $done['done'] === 3);
+    assert(array_column($done['results'], 'result') === ['created', 'created', 'invalid']);
+    assert($link($in->postId('staff', 'test-b1'), 'division') === $in->postId('divisions', 'test-BD'));       // Review Focus 2
+
+    $job2 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b2', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
+    $wpdb->update($wpdb->prefix . 'iphl_jobs', ['status' => 'running', 'heartbeat' => gmdate('Y-m-d H:i:s', time() - 600)], ['id' => $job2['id']]);
+    $jobs->sweep();
+    assert($jobs->get($job2['id'])['status'] === 'done' && $in->postId('staff', 'test-b2') > 0);
+
+    // Snapshot of one type deletes that type's records (with a Data Hub ID) missing from it. Companies here, so no real
+    // records are at risk: locally only test companies have a Data Hub ID.
+    $realWithIds = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts p JOIN $wpdb->postmeta m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s AND m.meta_value NOT LIKE 'test-%%'", PostTypes::COMPANY, PostTypes::SOURCE_ID));
+    if ($realWithIds === 0) {
+        $in->put('companies', 'test-C1', ['name' => 'Test Company One', 'updated_at' => $t1], 'test-run', 'api');
+        $in->put('companies', 'test-C2', ['name' => 'Test Company Two', 'updated_at' => $t1], 'test-run', 'api');
+        $ours = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 2;
+        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'data' => ['name' => 'Test Company One', 'updated_at' => $t2]]], 'test-run', 'api');
+        assert(array_column($results, 'result') === ['unchanged', 'deleted']);
+        assert($in->postId('companies', 'test-C1') > 0 && $in->postId('companies', 'test-C2') === 0);
+        assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 1 === (int) $ours); // ours untouched
+    } else {
+        echo "Skipped the snapshot deletion check: this site has companies with Data Hub IDs.\n";
+    }
 } finally {
     $cleanUp();
 }
