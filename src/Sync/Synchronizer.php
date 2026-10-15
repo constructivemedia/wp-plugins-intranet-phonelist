@@ -20,9 +20,18 @@ use wpdb;
 final class Synchronizer
 {
     private const LOCK = 'intranet_phonelist_lock';
+    /** No heartbeat for this long = the sync holding the lock is dead. */
+    private const LOCK_TTL = 300;
     public const LAST_SYNC = 'intranet_phonelist_last_sync';
+    /** WP-Cron hook that runs a Sync Now in the background. */
+    public const BACKGROUND_HOOK = 'intranet_phonelist_sync_background';
 
     private string $runId = '';
+    private int $lastBeat = 0;
+    /** What the sync is doing right now, shown on the Sync tab and printed by WP-CLI. */
+    private string $step = '';
+    /** @var callable|null */
+    private $onProgress = null;
     private string $trigger = '';
     /** @var array<string, int> */
     private array $counts = [];
@@ -52,9 +61,17 @@ final class Synchronizer
         $this->counts = ['created' => 0, 'updated' => 0, 'deleted' => 0, 'errors' => 0, 'photos' => 0, 'no_photo' => 0];
 
         if (!$this->lock()) {
-            $this->record('error', 'error', message: 'A sync is already running.');
-            return ['status' => 'failed', 'counts' => $this->counts, 'message' => 'A sync is already running.'];
+            $lock = $this->running();
+            $busy = $lock
+                ? sprintf('A sync is already running (started %s, last activity %s).', wp_date('g:i:sa', $lock['started']), wp_date('g:i:sa', $lock['beat']))
+                : 'A sync is already running.';
+            $this->record('error', 'error', message: $busy);
+            return ['status' => 'failed', 'counts' => $this->counts, 'message' => $busy];
         }
+
+        // A full first sync can take minutes: don't let PHP's time limit or a closed browser tab cut it short.
+        @set_time_limit(0);
+        ignore_user_abort(true);
 
         $this->record('info', 'sync_start', message: $full ? 'Full sync.' : "Single staff sync: $staffId.");
         $message = '';
@@ -72,6 +89,7 @@ final class Synchronizer
                 }
                 $plan = Planner::plan($rows[$type], $existing, $config['key']);
                 $this->debug('plan', $type, ['create' => count($plan['create']), 'update' => count($plan['update']), 'delete' => count($plan['delete'])]);
+                $this->progress(sprintf('%s: %d to create, %d to update, %d to delete.', $config['plural'], count($plan['create']), count($plan['update']), count($plan['delete'])));
                 $this->apply($type, $config, $plan);
             }
 
@@ -93,7 +111,7 @@ final class Synchronizer
             $this->record('error', 'error', message: $message);
         } finally {
             $this->flushPending();
-            delete_option(self::LOCK);
+            $this->unlock();
         }
 
         ['created' => $created, 'updated' => $updated, 'deleted' => $deleted, 'errors' => $errors, 'photos' => $photos, 'no_photo' => $noPhoto] = $this->counts;
@@ -120,11 +138,14 @@ final class Synchronizer
         $today = new DateTimeImmutable('today', wp_timezone());
 
         foreach ($types as $type => $config) {
+            $this->progress("Fetching {$config['table']} from Oracle…");
             $started = microtime(true);
             $raw = $full
                 ? $this->source->fetch($config['table'], $config['columns'])
                 : $this->source->fetch($config['table'], $config['columns'], $config['key'], $staffId);
-            $this->debug('fetch', $type, ['table' => $config['table'], 'rows' => count($raw), 'ms' => (int) ((microtime(true) - $started) * 1000)]);
+            $seconds = microtime(true) - $started;
+            $this->debug('fetch', $type, ['table' => $config['table'], 'rows' => count($raw), 'ms' => (int) ($seconds * 1000)]);
+            $this->progress(sprintf('Fetched %d rows from %s (%.1fs).', count($raw), $config['table'], $seconds));
 
             if ($full && !$raw) {
                 throw new RuntimeException("{$config['table']} returned no rows; aborting so nothing is deleted.");
@@ -159,8 +180,10 @@ final class Synchronizer
 
     private function apply(string $type, array $config, array $plan): void
     {
-        foreach (['create', 'update'] as $operation) {
+        foreach (['create' => 'creating', 'update' => 'updating'] as $operation => $verb) {
+            $done = 0;
             foreach ($plan[$operation] as $item) {
+                $this->tick("{$config['plural']}: $verb", ++$done, count($plan[$operation]));
                 $id = $item['row'][$config['key']];
                 $title = $config['title']($item['row']);
                 $before = $operation === 'update' ? $this->storedRow($item['post_id'], $config['columns']) : [];
@@ -193,7 +216,9 @@ final class Synchronizer
             }
         }
 
+        $done = 0;
         foreach ($plan['delete'] as $post) {
+            $this->tick("{$config['plural']}: deleting", ++$done, count($plan['delete']));
             $title = get_the_title($post['post_id']);
             $context = ['division' => (string) get_post_meta($post['post_id'], 'div_code', true)];
             Photos::detach($post['post_id']); // Leavers' photos go too.
@@ -216,7 +241,10 @@ final class Synchronizer
         $title = PostTypes::synced()[PostTypes::STAFF]['title'];
         update_meta_cache('post', array_column($posts, 'post_id')); // One query, not one per person.
 
+        $this->progress(sprintf('Photos: checking %d staff…', count($rows)));
+        $done = 0;
         foreach ($rows as $row) {
+            $this->tick('Photos', ++$done, count($rows));
             $id = $row['ID'];
             if (!isset($posts[$id])) {
                 continue; // LEFT, or failed to save.
@@ -294,7 +322,7 @@ final class Synchronizer
             $this->linkCompanies();
         } finally {
             $this->flushPending();
-            delete_option(self::LOCK);
+            $this->unlock();
         }
 
         return ['status' => $this->counts['errors'] ? 'completed_with_errors' : 'completed', 'counts' => $this->counts];
@@ -310,6 +338,7 @@ final class Synchronizer
         if (!$map) {
             return;
         }
+        $this->progress('Applying the company mapping…');
 
         $companyIds = [];
         foreach (get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'post_status' => 'any']) as $company) {
@@ -340,6 +369,7 @@ final class Synchronizer
 
         $divisions = $this->existing(PostTypes::DIVISION);
         foreach ($mapped as $code => $name) {
+            $this->heartbeat();
             if (!isset($divisions[$code], $companyIds[$name])) {
                 continue; // Division not synced (e.g. no current staff), or its company failed to save.
             }
@@ -414,16 +444,101 @@ final class Synchronizer
     }
 
     /**
-     * add_option is atomic on the unique option_name; a lock older than an hour is assumed dead.
+     * The sync currently running, or null. A lock with no heartbeat for LOCK_TTL seconds is dead
+     * (e.g. its process was killed by a php-fpm restart) and doesn't count.
+     *
+     * @return array{run: string, started: int, beat: int, step?: string}|null
+     */
+    public function running(): ?array
+    {
+        wp_cache_delete(self::LOCK, 'options'); // Another process may have changed it.
+        $lock = get_option(self::LOCK);
+
+        return is_array($lock) && $lock['beat'] >= time() - self::LOCK_TTL ? $lock : null;
+    }
+
+    public function clearLock(): void
+    {
+        delete_option(self::LOCK);
+    }
+
+    /**
+     * add_option is atomic on the unique option_name, so only one run can take the lock.
      */
     private function lock(): bool
     {
-        $since = (int) get_option(self::LOCK);
-        if ($since && $since < time() - HOUR_IN_SECONDS) {
-            delete_option(self::LOCK);
+        if (!$this->running()) {
+            delete_option(self::LOCK); // Dead, or from an older version.
         }
 
-        return add_option(self::LOCK, time(), '', false);
+        $now = time();
+        if (!add_option(self::LOCK, ['run' => $this->runId, 'started' => $now, 'beat' => $now], '', false)) {
+            return false;
+        }
+        $this->lastBeat = $now;
+        register_shutdown_function(fn () => $this->unlock()); // Also released after a fatal error.
+
+        return true;
+    }
+
+    /**
+     * Receive progress messages as the sync works (WP-CLI prints them).
+     */
+    public function onProgress(callable $callback): void
+    {
+        $this->onProgress = $callback;
+    }
+
+    /**
+     * Report what the sync is doing: printed by WP-CLI, and stored on the lock for the Sync tab.
+     * Stage changes are saved straight away; frequent "n of total" updates are throttled by the heartbeat.
+     */
+    private function progress(string $step, bool $stage = true): void
+    {
+        $this->step = $step;
+        if ($this->onProgress) {
+            ($this->onProgress)($step);
+        }
+        $this->heartbeat($stage);
+    }
+
+    /**
+     * Keep the lock alive (and its step current) while working; cheap to call often.
+     */
+    private function heartbeat(bool $force = false): void
+    {
+        if (!$force && time() - $this->lastBeat < 5) {
+            return;
+        }
+        $lock = $this->running();
+        if ($lock && $lock['run'] === $this->runId) {
+            $this->lastBeat = time();
+            update_option(self::LOCK, ['beat' => $this->lastBeat, 'step' => $this->step] + $lock, false);
+        }
+    }
+
+    /**
+     * Every $every items (and the last), report "label: n of total…".
+     */
+    private function tick(string $label, int $done, int $total, int $every = 25): void
+    {
+        if ($done % $every === 0 || $done === $total) {
+            $this->progress("{$label}: {$done} of {$total}…", stage: false);
+        } else {
+            $this->heartbeat();
+        }
+    }
+
+    /**
+     * Release the lock, but only if this run holds it.
+     */
+    private function unlock(): void
+    {
+        wp_cache_delete(self::LOCK, 'options');
+        $lock = get_option(self::LOCK);
+        if (is_array($lock) && $lock['run'] === $this->runId) {
+            delete_option(self::LOCK);
+        }
     }
 
     /**

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Intranet Phonelist
  * Description: Syncs staff and divisions from Oracle into WordPress.
- * Version:     1.7.1
+ * Version:     1.7.2
  * Author:      Constructive Media
  * Requires PHP: 8.1
  * Requires Plugins: advanced-custom-fields

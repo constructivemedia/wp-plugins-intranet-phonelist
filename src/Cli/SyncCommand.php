@@ -29,6 +29,7 @@ final class SyncCommand
 
     public function __invoke(array $args, array $options): void
     {
+        $this->synchronizer->onProgress(fn (string $step) => WP_CLI::log($step));
         $result = $this->synchronizer->run('cli', $options['staff'] ?? null);
 
         $result['status'] === 'completed'

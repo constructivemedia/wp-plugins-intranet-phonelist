@@ -33,7 +33,9 @@ wp phonelist sync                  # full sync: mirror Oracle, delete anyone no 
 wp phonelist sync --staff=00001    # one person only; never deletes anyone else
 ```
 
-- **Nightly cron**: `0 2 * * * wp phonelist sync --path=/path/to/wordpress`. The command exits non-zero unless the run is fully clean.
+- **Nightly cron**: `0 2 * * * wp phonelist sync --path=/path/to/wordpress`, run as the web server's user (not root, or uploaded photos end up owned by root). The command prints its progress and exits non-zero unless the run is fully clean.
+- **Sync Now** runs in the background through WP-Cron, so the page returns straight away, and the Sync tab shows live progress until it finishes.
+- **One sync at a time.** The lock is refreshed as a sync works. If a sync is killed (e.g. php-fpm is restarted mid-run), the next sync takes over after 5 minutes without activity, or straight away with **Clear lock** on the Sync tab.
 - **Settings → Phonelist** has three tabs:
   - **Sync:** the last result, any errors or warnings from it, and **Sync Now**.
   - **Logs:** the audit log, filterable by run, level and action.
@@ -166,6 +168,6 @@ A constraint like `^1.1.2` then picks up `v1.1.2` and anything later below 2.0, 
 
 Set the three `INTRANET_PHONELIST_ORACLE_*` constants (and `INTRANET_PHONELIST_PHOTOS_DIR`) in the production `wp-config.php`, install `oci8` on the server, activate the plugin, enter the company mapping under **Settings → Phonelist → Companies**, and add the nightly cron.
 
-Run the **first** sync with `wp phonelist sync`, not **Sync Now**. Creating every post takes about a minute, which is longer than most servers let a web request run. Later syncs only touch what changed and take a few seconds.
+Run the **first** sync with `wp phonelist sync` (as the web server's user) so you can watch it. It creates every post, and with photos it can take a few minutes. Later syncs only touch what changed and take a few seconds.
 
 The **Phonelist** admin area is for administrators only (`manage_options`), because staff records hold HR data. Staff and divisions can't be added or deleted by hand; the sync manages them. They can still be opened and edited (e.g. a division's **Company**).

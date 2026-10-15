@@ -33,6 +33,7 @@ final class SettingsPage
         add_action('admin_post_intranet_phonelist_sync', [$this, 'handleSync']);
         add_action('admin_post_intranet_phonelist_delete_logs', [$this, 'handleDeleteLogs']);
         add_action('admin_post_intranet_phonelist_save_companies', [$this, 'handleSaveCompanies']);
+        add_action('admin_post_intranet_phonelist_clear_lock', [$this, 'handleClearLock']);
     }
 
     public function handleSaveCompanies(): void
@@ -48,11 +49,27 @@ final class SettingsPage
         ]);
     }
 
+    /**
+     * Queue the sync in the background (WP-Cron) and return straight away; the Sync tab shows its progress.
+     */
     public function handleSync(): void
     {
         $this->authorize('intranet_phonelist_sync');
-        $result = $this->synchronizer->run('manual');
-        $this->redirect(['notice' => $result['status'] === 'completed' ? 'synced' : 'sync_failed']);
+        if ($this->synchronizer->running()) {
+            $this->redirect(['notice' => 'already_running']);
+        }
+        if (!wp_next_scheduled(Synchronizer::BACKGROUND_HOOK, [get_current_user_id()])) {
+            wp_schedule_single_event(time(), Synchronizer::BACKGROUND_HOOK, [get_current_user_id()]);
+        }
+        spawn_cron();
+        $this->redirect(['notice' => 'sync_started']);
+    }
+
+    public function handleClearLock(): void
+    {
+        $this->authorize('intranet_phonelist_clear_lock');
+        $this->synchronizer->clearLock();
+        $this->redirect(['notice' => 'lock_cleared']);
     }
 
     public function handleDeleteLogs(): void
@@ -66,8 +83,9 @@ final class SettingsPage
     {
         $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'sync';
         $notices = [
-            'synced' => ['success', 'Sync completed.'],
-            'sync_failed' => ['error', 'Sync did not complete cleanly. See the log.'],
+            'sync_started' => ['success', 'Sync started in the background. Progress shows below; this page refreshes until it finishes.'],
+            'already_running' => ['warning', 'A sync is already running.'],
+            'lock_cleared' => ['success', 'Lock cleared. You can start a new sync.'],
             'logs_deleted' => ['success', sprintf('Deleted %d log entries.', absint($_GET['count'] ?? 0))],
             'companies_saved' => ['success', sprintf('Mapping saved: %d companies created, %d divisions updated.', absint($_GET['created'] ?? 0), absint($_GET['updated'] ?? 0))],
             'companies_busy' => ['warning', 'Mapping saved. A sync is running, so it will be applied by that sync or the next one.'],
@@ -235,11 +253,41 @@ final class SettingsPage
             <?php endif; ?>
         <?php endforeach; ?>
 
-        <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>">
-            <input type="hidden" name="action" value="intranet_phonelist_sync">
-            <?php wp_nonce_field('intranet_phonelist_sync'); ?>
-            <?php submit_button('Sync Now', 'primary', 'submit', false); ?>
-        </form>
+        <?php
+        $running = $this->synchronizer->running();
+        $queued = wp_next_scheduled(Synchronizer::BACKGROUND_HOOK, [get_current_user_id()]);
+        ?>
+        <?php if ($running) : ?>
+            <div class="notice notice-info inline">
+                <p>
+                    <span class="spinner is-active" style="float:none;margin:0 6px 0 0"></span>
+                    <strong>Sync running</strong> since <?= esc_html(wp_date('g:i:sa', $running['started'])) ?>:
+                    <?= esc_html($running['step'] ?? 'starting…') ?>
+                    <span style="color:#646970">(last activity <?= esc_html(wp_date('g:i:sa', $running['beat'])) ?>)</span>
+                </p>
+            </div>
+            <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>" onsubmit="return confirm('Only clear the lock if the sync has stopped (e.g. the server was restarted). Clear it?');">
+                <input type="hidden" name="action" value="intranet_phonelist_clear_lock">
+                <?php wp_nonce_field('intranet_phonelist_clear_lock'); ?>
+                <?php submit_button('Clear lock', 'secondary small', 'submit', false); ?>
+            </form>
+        <?php elseif ($queued) : ?>
+            <div class="notice notice-info inline"><p><span class="spinner is-active" style="float:none;margin:0 6px 0 0"></span><strong>Sync queued</strong>, starting…</p>
+                <?php if ($queued < time() - MINUTE_IN_SECONDS) : ?>
+                    <p>It hasn't started after a minute, so WP-Cron may not be running on this server (it needs to reach its own <code>wp-cron.php</code>).
+                        Run <code>wp phonelist sync</code> instead, or have the server's cron call <code>wp-cron.php</code>.</p>
+                <?php endif; ?>
+            </div>
+        <?php else : ?>
+            <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>">
+                <input type="hidden" name="action" value="intranet_phonelist_sync">
+                <?php wp_nonce_field('intranet_phonelist_sync'); ?>
+                <?php submit_button('Sync Now', 'primary', 'submit', false); ?>
+            </form>
+        <?php endif; ?>
+        <?php if ($running || $queued) : ?>
+            <script>setTimeout(() => location.replace(location.href.replace(/&notice=[^&]*/, '')), 5000);</script>
+        <?php endif; ?>
         <?php
     }
 

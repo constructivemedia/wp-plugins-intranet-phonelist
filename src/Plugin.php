@@ -32,6 +32,12 @@ final class Plugin
         add_action('admin_menu', [$postTypes, 'registerMenu'], 9);
         add_action('acf/include_fields', [$postTypes, 'registerFields']);
         (new StaffController())->register();
+
+        // Sync Now runs here, via WP-Cron, so the browser never waits on a long sync.
+        add_action(Synchronizer::BACKGROUND_HOOK, function (int $userId = 0) use ($synchronizer): void {
+            wp_set_current_user($userId); // Logged as the user who clicked Sync Now.
+            $synchronizer->run('manual');
+        });
         register_activation_hook($pluginFile, [$log, 'install']);
 
         if (is_admin()) {
