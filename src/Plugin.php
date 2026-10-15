@@ -8,6 +8,7 @@ use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
 use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Sync\OracleSource;
 use ConstructiveMedia\IntranetPhonelist\Sync\Photos;
@@ -20,12 +21,23 @@ final class Plugin
 {
     public const DAILY_HOOK = 'iphl_daily';
 
+    private static Ingestor $ingestor;
+
+    /**
+     * The one Ingestor, for the API, jobs, the Oracle import and tests/wp-check.php.
+     */
+    public static function ingestor(): Ingestor
+    {
+        return self::$ingestor;
+    }
+
     public static function boot(string $pluginFile): void
     {
         global $wpdb;
 
         $log = new Log($wpdb);
         $log->maybeUpgrade();
+        self::$ingestor = new Ingestor($log, $wpdb);
         $photos = Photos::fromConstants();
         $companies = new CompanyMap();
         $synchronizer = new Synchronizer(OracleSource::fromConstants(), $photos, $companies, $log, $wpdb);
