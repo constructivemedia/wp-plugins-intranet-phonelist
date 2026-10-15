@@ -164,14 +164,14 @@ final class ClubCommand
         $index = ['preferred' => [], 'legal' => [], 'email' => []];
         foreach (get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1]) as $post) {
             $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
-            $last = $meta('name_last_co');
+            $last = $meta('last_name');
             $person = ['company' => (string) get_post_field('post_title', (int) get_post_meta($post->ID, 'company', true), 'raw')];
 
-            $index['preferred'][self::key(PostTypes::displayName($meta('pref_name'), $meta('name_first'), $last))][$post->ID] = $person;
+            $index['preferred'][self::key(PostTypes::displayName($meta('preferred_name'), $meta('first_name'), $last))][$post->ID] = $person;
             if (str_contains($meta('email'), '@')) {
                 $index['email'][self::key(strstr($meta('email'), '@', true))][$post->ID] = $person;
             }
-            foreach (array_unique([$meta('name_first'), strtok($meta('name_first'), ' ') ?: '']) as $first) {
+            foreach (array_unique([$meta('first_name'), strtok($meta('first_name'), ' ') ?: '']) as $first) {
                 if ($first !== '') {
                     $index['legal'][self::key("$first $last")][$post->ID] = $person;
                 }

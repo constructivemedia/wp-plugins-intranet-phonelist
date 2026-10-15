@@ -21,6 +21,8 @@ use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 final class Plugin
 {
     public const DAILY_HOOK = 'iphl_daily';
+    /** The admin's Oracle import runs here, via WP-Cron, so the browser never waits on it. */
+    public const ORACLE_HOOK = 'iphl_oracle_import';
 
     private static Ingestor $ingestor;
     private static Relations $relations;
@@ -82,8 +84,13 @@ final class Plugin
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
         }
 
+        add_action(self::ORACLE_HOOK, function (int $userId = 0): void {
+            wp_set_current_user($userId); // Logged as the user who clicked Import.
+            self::oracle()->run(null, wp_generate_uuid4(), 'manual', fn () => null);
+        });
+
         if (is_admin()) {
-            (new SettingsPage($photos, $log))->register();
+            (new SettingsPage(self::$jobs, $photos, $log, self::oracle()->configured()))->register();
             (new Relationships())->register();
         }
         if (defined('WP_CLI') && WP_CLI) {

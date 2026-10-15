@@ -6,12 +6,13 @@ use DateTimeImmutable;
 use JsonSerializable;
 
 /**
- * A staff member as theme templates and the REST API see them. Read-only.
- * Deliberately excludes DOB, home phone and other HR fields.
+ * A staff member as theme templates and the club endpoint see them. Read-only.
+ * Deliberately excludes date of birth, home phone and other HR fields.
  */
 final class Staff implements JsonSerializable
 {
     public function __construct(
+        /** The Data Hub ID. */
         public readonly string $id,
         public readonly int $postId,
         public readonly string $name,
@@ -20,14 +21,19 @@ final class Staff implements JsonSerializable
         public readonly string $position,
         public readonly string $email,
         public readonly string $mobile,
+        /** Direct phone number. */
+        public readonly string $phone,
+        /** VoIP extension. */
         public readonly string $extension,
-        public readonly string $divisionCode,
+        public readonly string $divisionId,
         public readonly string $division,
         public readonly string $company,
         /** Department code, e.g. '20'. */
-        public readonly string $tag,
+        public readonly string $departmentCode,
         /** Department, e.g. 'Construction'. */
-        public readonly string $tagDescription,
+        public readonly string $department,
+        /** Last day of their current leave; null when not on leave. */
+        public readonly ?DateTimeImmutable $onLeaveUntil = null,
         /** Next birthday (no year of birth or age is exposed). Set by Phonelist::birthdays(). */
         public readonly ?DateTimeImmutable $birthday = null,
         /** Days until $birthday, 0 = today. Set by Phonelist::birthdays(). */
@@ -57,12 +63,13 @@ final class Staff implements JsonSerializable
             position: '',
             email: '',
             mobile: '',
+            phone: '',
             extension: '',
-            divisionCode: '',
+            divisionId: '',
             division: $division,
             company: $company,
-            tag: '',
-            tagDescription: '',
+            departmentCode: '',
+            department: '',
             club: $club,
         );
     }
@@ -71,6 +78,7 @@ final class Staff implements JsonSerializable
     {
         $data = get_object_vars($this);
         $data['birthday'] = $this->birthday?->format('Y-m-d');
+        $data['onLeaveUntil'] = $this->onLeaveUntil?->format('Y-m-d');
 
         return array_filter($data, fn ($value): bool => $value !== null);
     }

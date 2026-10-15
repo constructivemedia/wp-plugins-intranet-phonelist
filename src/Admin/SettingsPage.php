@@ -2,24 +2,28 @@
 
 namespace ConstructiveMedia\IntranetPhonelist\Admin;
 
-use ConstructiveMedia\IntranetPhonelist\PostTypes;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
+use ConstructiveMedia\IntranetPhonelist\Plugin;
+use ConstructiveMedia\IntranetPhonelist\PostTypes;
 
 /**
- * Settings → Phonelist: Sync (last result, Sync Now), Logs (filterable audit log with payloads),
- * Companies (division → company mapping) and Photos (staff without a photo).
+ * Settings → Phonelist: Jobs (recent batches and snapshots; the Oracle import on development sites),
+ * Logs (filterable audit log with payloads) and Photos (staff without a photo).
  */
 final class SettingsPage
 {
     private const SLUG = 'intranet-phonelist';
     private const PER_PAGE = 100;
-    private const TABS = ['logs' => 'Logs', 'photos' => 'Photos'];
+    private const TABS = ['jobs' => 'Jobs', 'logs' => 'Logs', 'photos' => 'Photos'];
     private const LEVEL_COLOURS = ['error' => '#d63638', 'warning' => '#996800', 'notice' => '#2271b1', 'info' => '#50575e', 'debug' => '#8c8f94'];
 
     public function __construct(
+        private readonly Jobs $jobs,
         private readonly Photos $photos,
         private readonly Log $log,
+        private readonly bool $oracle,
     ) {
     }
 
@@ -27,6 +31,7 @@ final class SettingsPage
     {
         add_action('admin_menu', fn () => add_options_page('Phonelist', 'Phonelist', 'manage_options', self::SLUG, [$this, 'render']));
         add_action('admin_post_intranet_phonelist_delete_logs', [$this, 'handleDeleteLogs']);
+        add_action('admin_post_intranet_phonelist_oracle_import', [$this, 'handleOracleImport']);
     }
 
     public function handleDeleteLogs(): void
@@ -36,10 +41,24 @@ final class SettingsPage
         $this->redirect(['tab' => 'logs', 'notice' => 'logs_deleted', 'count' => $deleted]);
     }
 
+    /**
+     * Queue the Oracle import in the background (WP-Cron) and return straight away.
+     */
+    public function handleOracleImport(): void
+    {
+        $this->authorize('intranet_phonelist_oracle_import');
+        if ($this->oracle && !wp_next_scheduled(Plugin::ORACLE_HOOK, [get_current_user_id()])) {
+            wp_schedule_single_event(time(), Plugin::ORACLE_HOOK, [get_current_user_id()]);
+            spawn_cron();
+        }
+        $this->redirect(['notice' => 'import_started']);
+    }
+
     public function render(): void
     {
-        $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'logs';
+        $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'jobs';
         $notices = [
+            'import_started' => ['success', 'Oracle import started in the background. Its results show in the Logs tab.'],
             'logs_deleted' => ['success', sprintf('Deleted %d log entries.', absint($_GET['count'] ?? 0))],
         ];
         $notice = $notices[$_GET['notice'] ?? ''] ?? null;
@@ -48,7 +67,7 @@ final class SettingsPage
             <h1>Phonelist</h1>
             <nav class="nav-tab-wrapper">
                 <?php foreach (self::TABS as $name => $label) : ?>
-                    <a href="<?= esc_url($this->url($name === 'logs' ? [] : ['tab' => $name])) ?>" class="nav-tab <?= $tab === $name ? 'nav-tab-active' : '' ?>"><?= esc_html($label) ?></a>
+                    <a href="<?= esc_url($this->url($name === 'jobs' ? [] : ['tab' => $name])) ?>" class="nav-tab <?= $tab === $name ? 'nav-tab-active' : '' ?>"><?= esc_html($label) ?></a>
                 <?php endforeach; ?>
             </nav>
 
@@ -58,10 +77,62 @@ final class SettingsPage
 
             <?php match ($tab) {
                 'photos' => $this->renderPhotos(),
-                default => $this->renderLogs(),
+                'logs' => $this->renderLogs(),
+                default => $this->renderJobs(),
             }; ?>
         </div>
         <?php
+    }
+
+    private function renderJobs(): void
+    {
+        $jobs = $this->jobs->recent();
+        $when = fn (?string $utc): string => $utc ? wp_date('j M Y g:i:sa', strtotime($utc . ' UTC')) : '';
+        $busy = array_filter($jobs, fn (array $job): bool => in_array($job['status'], ['queued', 'running'], true))
+            || wp_next_scheduled(Plugin::ORACLE_HOOK, [get_current_user_id()]);
+        ?>
+        <?php if ($this->oracle) : ?>
+            <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>" style="margin:12px 0">
+                <input type="hidden" name="action" value="intranet_phonelist_oracle_import">
+                <?php wp_nonce_field('intranet_phonelist_oracle_import'); ?>
+                <?php submit_button('Import from Oracle', 'secondary', 'submit', false); ?>
+                <span class="description">Development only: reads Oracle and sends every division and staff member through the API's ingest.</span>
+            </form>
+        <?php endif; ?>
+
+        <p>Batches and snapshots sent by Data Hub. Single-record changes are in the Logs tab.</p>
+        <table class="widefat iphl-log">
+            <thead><tr><th>Created</th><th>Job</th><th>Kind</th><th>Status</th><th>Items</th><th>Results</th><th>Finished</th><th>Details</th></tr></thead>
+            <tbody>
+            <?php if (!$jobs) : ?>
+                <tr><td colspan="8">No jobs yet.</td></tr>
+            <?php endif; ?>
+            <?php foreach ($jobs as $job) : ?>
+                <?php $counts = array_count_values(array_column($job['results'], 'result')); ?>
+                <tr class="iphl-entry">
+                    <td><?= esc_html($when($job['created_at'])) ?></td>
+                    <td>
+                        <a href="<?= esc_url($this->url(['tab' => 'logs', 'run' => $job['id']])) ?>"><code><?= esc_html(substr($job['id'], 0, 8)) ?></code></a>
+                        <div class="iphl-sub"><?= esc_html($job['triggered_by']) ?></div>
+                    </td>
+                    <td><?= esc_html($job['kind'] . ($job['type'] ? " · {$job['type']}" : '')) ?></td>
+                    <td><?= $this->badge(match ($job['status']) { 'failed' => 'error', 'running', 'queued' => 'notice', default => 'info' }, $job['status']) ?></td>
+                    <td><?= (int) $job['done'] ?> / <?= (int) $job['total'] ?></td>
+                    <td><?= esc_html(implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts))) ?></td>
+                    <td><?= esc_html($when($job['finished_at'])) ?></td>
+                    <td><button type="button" class="button button-small iphl-toggle" aria-expanded="false" aria-controls="iphl-job-<?= esc_attr($job['id']) ?>">View</button></td>
+                </tr>
+                <tr class="iphl-detail" id="iphl-job-<?= esc_attr($job['id']) ?>" hidden>
+                    <td colspan="8"><pre><?= esc_html(wp_json_encode(['error' => $job['error'], 'results' => $job['results']], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td>
+                </tr>
+            <?php endforeach; ?>
+            </tbody>
+        </table>
+        <?php
+        $this->logStyles();
+        if ($busy) {
+            echo '<script>setTimeout(() => location.replace(location.href.replace(/&notice=[^&]*/, "")), 5000);</script>';
+        }
     }
 
     private function renderPhotos(): void
@@ -100,7 +171,7 @@ final class SettingsPage
                 ?>
                 <tr>
                     <td><a href="<?= esc_url(get_edit_post_link($person->ID)) ?>"><?= esc_html($person->post_title) ?></a></td>
-                    <td><code><?= esc_html($meta('div_code')) ?></code></td>
+                    <td><code><?= esc_html($meta('division_id')) ?></code></td>
                     <td><code><?= implode('.jpg</code>, <code>', array_map('esc_html', $tried)) ?>.jpg</code></td>
                 </tr>
             <?php endforeach; ?>
@@ -131,15 +202,15 @@ final class SettingsPage
         <form method="get" style="margin:12px 0 8px">
             <input type="hidden" name="page" value="<?= esc_attr(self::SLUG) ?>">
             <input type="hidden" name="tab" value="logs">
-            <label for="iphl-run">Run</label>
+            <label for="iphl-run">Job</label>
             <select id="iphl-run" name="run">
-                <option value="">All runs</option>
+                <option value="">All</option>
                 <?php foreach ($runs as $runId => $run) : ?>
                     <option value="<?= esc_attr($runId) ?>" <?php selected($filters['run_id'], $runId); ?>>
                         <?= esc_html(implode(' · ', array_filter([
                             $when($run->started),
                             $this->who($run->triggered_by, (int) $run->user_id),
-                            $run->status !== 'completed' ? $run->status : null, // Only worth showing when a run didn't complete.
+                            $run->status !== 'done' ? $run->status : null, // Only worth showing when a job didn't finish.
                         ]))) ?>
                     </option>
                 <?php endforeach; ?>
@@ -161,15 +232,8 @@ final class SettingsPage
             <?php submit_button('Filter', '', '', false); ?>
         </form>
 
-        <style>
-            .iphl-log td { vertical-align: middle; }
-            .iphl-log tr.iphl-entry:nth-of-type(4n+1) { background: #f6f7f7; }
-            .iphl-log .iphl-sub { color: #646970; font-size: 12px; }
-            .iphl-log .iphl-detail > td { background: #fcfcfc; border-left: 3px solid #2271b1; }
-            .iphl-log .iphl-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow: auto; }
-        </style>
         <table class="widefat iphl-log">
-            <thead><tr><th>Time</th><th>Run</th><th>Level</th><th>Action</th><th>Record</th><th>ID</th><th>Message</th><th>Details</th></tr></thead>
+            <thead><tr><th>Time</th><th>Job</th><th>Level</th><th>Action</th><th>Record</th><th>ID</th><th>Message</th><th>Details</th></tr></thead>
             <tbody>
             <?php if (!$log['rows']) : ?>
                 <tr><td colspan="8">No log entries.</td></tr>
@@ -183,7 +247,7 @@ final class SettingsPage
                     </td>
                     <td><?= $this->badge($row->level) ?></td>
                     <td><?= esc_html($row->action) ?></td>
-                    <td><?= in_array($row->action, ['sync_start', 'sync_end'], true) ? '' : esc_html($row->label) ?></td>
+                    <td><?= in_array($row->action, ['job_start', 'job_end'], true) ? '' : esc_html($row->label) ?></td>
                     <td>
                         <?php if ($row->source_id) : ?>
                             <code title="<?= esc_attr(str_replace('iphl_', '', (string) $row->post_type)) ?>"><?= esc_html($row->source_id) ?></code>
@@ -206,16 +270,7 @@ final class SettingsPage
             <?php endforeach; ?>
             </tbody>
         </table>
-        <script>
-            document.addEventListener('click', (event) => {
-                const button = event.target.closest('.iphl-toggle');
-                if (!button) return;
-                const open = button.getAttribute('aria-expanded') === 'true';
-                button.setAttribute('aria-expanded', String(!open));
-                button.textContent = open ? 'View' : 'Hide';
-                document.getElementById(button.getAttribute('aria-controls')).hidden = open;
-            });
-        </script>
+        <?php $this->logStyles(); ?>
         <div class="tablenav"><div class="tablenav-pages">
             <?= wp_kses_post(paginate_links([
                 'base' => add_query_arg('paged', '%#%'),
@@ -242,7 +297,7 @@ final class SettingsPage
     }
 
     /**
-     * 'cli', or 'manual · Display Name' when a logged-in user started it.
+     * 'api', 'oracle' or 'system', or 'manual · Display Name' when a logged-in user did it.
      */
     private function who(string $trigger, int $userId): string
     {
@@ -251,13 +306,39 @@ final class SettingsPage
         return $user ? "$trigger · {$user->display_name}" : $trigger;
     }
 
-    private function badge(string $level): string
+    private function badge(string $level, ?string $label = null): string
     {
         return sprintf(
             '<span style="display:inline-block;padding:1px 8px;border-radius:10px;color:#fff;background:%s;font-size:11px">%s</span>',
             esc_attr(self::LEVEL_COLOURS[$level] ?? '#50575e'),
-            esc_html($level),
+            esc_html($label ?? $level),
         );
+    }
+
+    /**
+     * Styles for the Jobs and Logs tables, and their View/Hide toggles.
+     */
+    private function logStyles(): void
+    {
+        ?>
+        <style>
+            .iphl-log td { vertical-align: middle; }
+            .iphl-log tr.iphl-entry:nth-of-type(4n+1) { background: #f6f7f7; }
+            .iphl-log .iphl-sub { color: #646970; font-size: 12px; }
+            .iphl-log .iphl-detail > td { background: #fcfcfc; border-left: 3px solid #2271b1; }
+            .iphl-log .iphl-detail pre { margin: 0; white-space: pre-wrap; word-break: break-word; max-height: 480px; overflow: auto; }
+        </style>
+        <script>
+            document.addEventListener('click', (event) => {
+                const button = event.target.closest('.iphl-toggle');
+                if (!button) return;
+                const open = button.getAttribute('aria-expanded') === 'true';
+                button.setAttribute('aria-expanded', String(!open));
+                button.textContent = open ? 'View' : 'Hide';
+                document.getElementById(button.getAttribute('aria-controls')).hidden = open;
+            });
+        </script>
+        <?php
     }
 
     private function authorize(string $nonceAction): void

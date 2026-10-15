@@ -132,22 +132,12 @@ final class Log
     {
         $rows = $this->db->get_results($this->db->prepare(
             "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by, MAX(user_id) AS user_id,
-                MAX(CASE WHEN action = 'sync_end' THEN COALESCE(JSON_UNQUOTE(JSON_EXTRACT(context, '$.status')), NULLIF(label, '')) END) AS status
+                MAX(CASE WHEN action = 'job_end' THEN JSON_UNQUOTE(JSON_EXTRACT(context, '$.status')) END) AS status
             FROM {$this->table} GROUP BY run_id ORDER BY started DESC LIMIT %d",
             $limit
         ));
 
         return array_column($rows, null, 'run_id');
-    }
-
-    /**
-     * @return array<string, int> Level => entries in one run.
-     */
-    public function levelCounts(string $runId): array
-    {
-        $rows = $this->db->get_results($this->db->prepare("SELECT level, COUNT(*) n FROM {$this->table} WHERE run_id = %s GROUP BY level", $runId));
-
-        return array_column(array_map(fn (object $row): array => [$row->level, (int) $row->n], $rows), 1, 0);
     }
 
     /**

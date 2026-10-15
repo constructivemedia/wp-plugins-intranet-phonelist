@@ -55,10 +55,10 @@ assert($next('19880229', '2026-10-13') === '2027-02-28'); // 2027 not leap
 assert($next('19880229', '2027-10-13') === '2028-02-29'); // 2028 leap
 assert($next('', '2026-10-13') === null);
 
-// Staff filters: any word of the full name starts with (case-insensitive), exact division and tag codes, AND-combined.
-$staffMember = fn (string $first, string $last, string $divisionCode = 'PHM', string $tag = '') => new Staff(
-    id: '1', postId: 1, name: "$first $last", firstName: $first, lastName: $last, position: '', email: '', mobile: '',
-    extension: '', divisionCode: $divisionCode, division: '', company: '', tag: $tag, tagDescription: '',
+// Staff filters: any word of the full name starts with (case-insensitive), exact division and department codes, AND-combined.
+$staffMember = fn (string $first, string $last, string $divisionId = 'PHM', string $department = '') => new Staff(
+    id: '1', postId: 1, name: "$first $last", firstName: $first, lastName: $last, position: '', email: '', mobile: '', phone: '',
+    extension: '', divisionId: $divisionId, division: '', company: '', departmentCode: $department, department: '',
 );
 $person = $staffMember('Jane', 'Citizen', 'JWH', '08');
 $match = fn (...$filters) => Phonelist::matches($person, ...$filters);
@@ -70,8 +70,9 @@ $compound = $staffMember('Maria', 'Santos Lima');
 assert(Phonelist::matches($compound, name: 'lim') && Phonelist::matches($compound, name: 'san'));
 assert(Phonelist::matches($staffMember('Ann', 'Smith-Jones'), name: 'jones'));
 assert($match(division: 'JWH') && !$match(division: 'jwh') && !$match(division: 'JW'));
-assert($match(tag: '08') && !$match(tag: '8'));
-assert($match(name: 'Jan', division: 'JWH', tag: '08') && !$match(name: 'Jan', division: 'JIT'));
+assert($match(department: '08') && !$match(department: '8'));
+assert($match(name: 'Jan', division: 'JWH', department: '08') && !$match(name: 'Jan', division: 'JIT'));
+assert(Staff::manual('John Monkhouse', company: 'JWH Group')->lastName === 'Monkhouse');
 assert(!isset($person->jsonSerialize()['birthday']) && !isset($person->jsonSerialize()['daysUntil']));
 
 // Schema: validation and normalisation of pushed records.

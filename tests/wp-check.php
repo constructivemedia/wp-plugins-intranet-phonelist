@@ -6,6 +6,7 @@
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
+use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\Plugin;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Schema;
@@ -144,6 +145,18 @@ try {
     assert($photos->afterWrite($p1, ['photo_url' => null], false) === null);
     array_map('unlink', glob("$folder/*"));
     rmdir($folder);
+
+    // Theme API reads the v2 fields: search, birthdays (hidden ones left out), on leave.
+    $in->put('staff', 'test-t1', ['first_name' => 'Zelda', 'last_name' => 'Testerson', 'department_code' => 'T9', 'phone' => '0894647800', 'extension' => '1234',
+        'date_of_birth' => (new DateTimeImmutable('tomorrow', wp_timezone()))->modify('-30 years')->format('Y-m-d'), 'on_leave_until' => '2026-12-01'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-t2', ['first_name' => 'Zora', 'last_name' => 'Testerson', 'hide_birthday' => true,
+        'date_of_birth' => (new DateTimeImmutable('tomorrow', wp_timezone()))->modify('-30 years')->format('Y-m-d')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $found = Phonelist::staff(name: 'zelda test');
+    assert(count($found) === 1 && $found[0]->departmentCode === 'T9' && $found[0]->phone === '+61894647800' && $found[0]->extension === '1234' && $found[0]->id === 'test-t1');
+    assert($found[0]->onLeaveUntil?->format('Y-m-d') === '2026-12-01');
+    assert(count(Phonelist::staff(name: 'Testerson', department: 'T9')) === 1);
+    $birthdays = array_map(fn ($person) => $person->id, Phonelist::birthdays(1));
+    assert(in_array('test-t1', $birthdays, true) && !in_array('test-t2', $birthdays, true));
 
     // Jobs: a batch resolves out-of-order references, repeats by idempotency key, and a crashed job is resumed.
     $jobs = Plugin::jobs();

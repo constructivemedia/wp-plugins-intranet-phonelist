@@ -16,23 +16,23 @@ use WP_Term;
  *         echo $person->name . ' — ' . $person->birthday->format('l j F');
  *     }
  *
- *     $construction = Phonelist::staff(division: 'JWH', tag: '20');
+ *     $construction = Phonelist::staff(division: 'JWH', department: '20');
  */
 final class Phonelist
 {
     /**
-     * Staff matching every given filter, sorted by name. Also served at GET /wp-json/phonelist/v1/staff.
+     * Staff matching every given filter, sorted by name.
      *
-     * @param string|null $name     Any word of the full name starts with this (case-insensitive), e.g. 'jan', 'cit', 'jane cit'.
-     * @param string|null $division Exact DIV_CODE, e.g. 'JWH'.
-     * @param string|null $tag      Exact department code, e.g. '20'.
+     * @param string|null $name       Any word of the full name starts with this (case-insensitive), e.g. 'jan', 'cit', 'jane cit'.
+     * @param string|null $division   Exact division ID, e.g. 'JWH'.
+     * @param string|null $department Exact department code, e.g. '20'.
      * @return Staff[]
      */
-    public static function staff(?string $name = null, ?string $division = null, ?string $tag = null): array
+    public static function staff(?string $name = null, ?string $division = null, ?string $department = null): array
     {
         $staff = array_values(array_filter(
             array_map(fn (WP_Post $post): Staff => self::toStaff($post), self::staffPosts()),
-            fn (Staff $person): bool => self::matches($person, $name, $division, $tag),
+            fn (Staff $person): bool => self::matches($person, $name, $division, $department),
         ));
         usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
 
@@ -42,14 +42,14 @@ final class Phonelist
     /**
      * @internal Public for tests/plan-check.php.
      */
-    public static function matches(Staff $person, ?string $name = null, ?string $division = null, ?string $tag = null): bool
+    public static function matches(Staff $person, ?string $name = null, ?string $division = null, ?string $department = null): bool
     {
         $name = trim($name ?? '');
 
         // Any word of the full name starts with $name: 'jan', 'cit', 'jane cit', 'lima' (Santos Lima), 'jones' (Smith-Jones).
         return ($name === '' || preg_match('/(^|[\s\-])' . preg_quote($name, '/') . '/iu', $person->name))
-            && (($division ?? '') === '' || $person->divisionCode === $division)
-            && (($tag ?? '') === '' || $person->tag === $tag);
+            && (($division ?? '') === '' || $person->divisionId === $division)
+            && (($department ?? '') === '' || $person->departmentCode === $department);
     }
 
     /**
@@ -97,7 +97,7 @@ final class Phonelist
 
     /**
      * Staff whose next birthday is within $days days (0 = today only), soonest first.
-     * Excludes anyone who opted out in HR (HIDE_BIRTHDAY) or has no usable DOB.
+     * Excludes anyone who opted out in HR (hide_birthday) or has no date of birth.
      *
      * @return Staff[]
      */
@@ -107,12 +107,10 @@ final class Phonelist
         $birthdays = [];
 
         foreach (self::staffPosts() as $post) {
-            $meta = fn (string $key): string => (string) get_post_meta($post->ID, $key, true);
-
-            if (in_array(strtolower(trim($meta('hide_birthday'))), ['1', 'y'], true)) { // 'y' until the first sync after v1.10 converts it.
+            if (get_post_meta($post->ID, 'hide_birthday', true) === '1') {
                 continue;
             }
-            $next = self::nextBirthday($meta('dob'), $today);
+            $next = self::nextBirthday((string) get_post_meta($post->ID, 'date_of_birth', true), $today);
             if (!$next) {
                 continue;
             }
@@ -161,52 +159,34 @@ final class Phonelist
 
     private static function toStaff(WP_Post $post, ?DateTimeImmutable $birthday = null, ?int $daysUntil = null): Staff
     {
-        $meta = fn (string $key): string => (string) get_post_meta($post->ID, $key, true);
-        $division = self::divisions()[$meta('div_code')] ?? ['name' => '', 'company' => ''];
+        $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
+        $title = fn (string $link): string => (int) $meta($link) ? get_post_field('post_title', (int) $meta($link), 'raw') : '';
         $photoId = (int) get_post_thumbnail_id($post->ID);
         $club = get_the_terms($post, PostTypes::CLUB_TAXONOMY); // Cached by the staff query.
+        $leave = DateTimeImmutable::createFromFormat('!Ymd', $meta('on_leave_until'), wp_timezone()) ?: null;
 
         return new Staff(
-            id: $meta('id'),
+            id: $meta(PostTypes::SOURCE_ID),
             postId: $post->ID,
-            name: PostTypes::displayName($meta('pref_name'), $meta('name_first'), $meta('name_last_co')),
-            firstName: trim($meta('pref_name')) !== '' ? $meta('pref_name') : $meta('name_first'),
-            lastName: $meta('name_last_co'),
+            name: PostTypes::displayName($meta('preferred_name'), $meta('first_name'), $meta('last_name')),
+            firstName: $meta('preferred_name') !== '' ? $meta('preferred_name') : $meta('first_name'),
+            lastName: $meta('last_name'),
             position: $meta('position'),
             email: $meta('email'),
-            mobile: $meta('mobile_no'),
-            extension: $meta('ph_ext'),
-            divisionCode: $meta('div_code'),
-            division: $division['name'],
-            company: $division['company'],
-            tag: trim($meta('tag')),
-            tagDescription: trim($meta('tag_description')),
+            mobile: $meta('mobile'),
+            phone: $meta('phone'),
+            extension: $meta('extension'),
+            divisionId: $meta('division_id'),
+            division: $title('division'),
+            company: $title('company'),
+            departmentCode: $meta('department_code'),
+            department: $meta('department'),
+            onLeaveUntil: $leave && $leave >= new DateTimeImmutable('today', wp_timezone()) ? $leave : null,
             birthday: $birthday,
             daysUntil: $daysUntil,
             photoId: $photoId ?: null,
             photoUrl: $photoId ? (wp_get_attachment_image_url($photoId, 'full') ?: null) : null,
             club: is_array($club) ? $club[0]->slug : null,
         );
-    }
-
-    /**
-     * @return array<string, array{name: string, company: string}> Keyed by DIV_CODE, cached per request.
-     */
-    private static function divisions(): array
-    {
-        static $divisions = null;
-
-        if ($divisions === null) {
-            $divisions = [];
-            foreach (get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1]) as $post) {
-                $companyId = (int) get_post_meta($post->ID, 'company', true);
-                $divisions[(string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true)] = [
-                    'name' => $post->post_title,
-                    'company' => $companyId ? get_post_field('post_title', $companyId, 'raw') : '',
-                ];
-            }
-        }
-
-        return $divisions;
     }
 }
