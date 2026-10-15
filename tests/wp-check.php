@@ -219,6 +219,12 @@ try {
     $jobs->sweep();
     assert($jobs->get($job2['id'])['status'] === 'done' && $in->postId('staff', 'test-b2') > 0);
 
+    // A specific job can be run on demand, and a failed one retried.
+    $job3 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b3', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
+    $wpdb->update($wpdb->prefix . 'iphl_jobs', ['status' => 'failed', 'attempts' => 3], ['id' => $job3['id']]);
+    assert($jobs->process($job3['id']) === true && $jobs->get($job3['id'])['status'] === 'done' && $in->postId('staff', 'test-b3') > 0);
+    assert($jobs->process($job3['id']) === false);                                                 // done jobs aren't re-run
+
     // A job that can't be stored is an error, never a silent acknowledgement.
     $refused = false;
     try {

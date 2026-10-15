@@ -85,7 +85,7 @@ Locally the folder is `assets/staffPhotos/`, which is gitignored: never commit s
 
 - **Phonelist menu:** Companies, Divisions, Staff and JWH Club. Administrators only (`manage_options`), because staff records hold HR data. Records can be opened and edited but not added or deleted by hand.
 - **Settings → Phonelist:**
-  - **Jobs:** recent batches and snapshots, with a result per item. Development sites also get **Import from Oracle** here.
+  - **Jobs:** recent batches and snapshots, with a result per item. A waiting job has **Run now**, and a failed one **Retry** (also `wp phonelist job <id>`). Development sites also get **Import from Oracle** here.
   - **Logs:** every API request and every record outcome (including `unchanged` and `stale`), filterable by job, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value.
   - **Photos:** staff without a photo.
 - **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`, or the `intranet_phonelist_log_days` filter), and finished jobs for 30. Both are pruned daily.
@@ -185,7 +185,7 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 | `src/Api/` | `IngressController`, `ReadController`, `Signature`, `Problem` |
 | `src/Oracle/` | `Source` and `Adapter`: the development import |
 | `src/Admin/` | `SettingsPage` (Jobs, Logs, Photos), `Relationships` (boxes on the edit screens) |
-| `src/Cli/` | `club-import`, `oracle-import` |
+| `src/Cli/` | `club-import`, `job`, `oracle-import` |
 | `src/Upgrade.php` | One-off v1 → v2 data upgrade, run on first load |
 | `src/Phonelist.php`, `src/Staff.php` | Public theme API and the value object it returns |
 

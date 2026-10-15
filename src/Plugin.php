@@ -7,6 +7,7 @@ use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\IngressController;
 use ConstructiveMedia\IntranetPhonelist\Api\ReadController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
+use ConstructiveMedia\IntranetPhonelist\Cli\JobCommand;
 use ConstructiveMedia\IntranetPhonelist\Cli\OracleImportCommand;
 use ConstructiveMedia\IntranetPhonelist\Oracle\Adapter;
 use ConstructiveMedia\IntranetPhonelist\Oracle\Source;
@@ -98,6 +99,7 @@ final class Plugin
         }
         if (defined('WP_CLI') && WP_CLI) {
             (new ClubCommand())->register();
+            (new JobCommand(self::$jobs))->register();
             if (self::$oracle->configured()) {
                 (new OracleImportCommand(self::$oracle))->register();
             }

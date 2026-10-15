@@ -32,6 +32,17 @@ final class SettingsPage
         add_action('admin_menu', fn () => add_options_page('Phonelist', 'Phonelist', 'manage_options', self::SLUG, [$this, 'render']));
         add_action('admin_post_intranet_phonelist_delete_logs', [$this, 'handleDeleteLogs']);
         add_action('admin_post_intranet_phonelist_oracle_import', [$this, 'handleOracleImport']);
+        add_action('admin_post_intranet_phonelist_run_job', [$this, 'handleRunJob']);
+    }
+
+    /**
+     * Run a waiting or failed job now.
+     */
+    public function handleRunJob(): void
+    {
+        $this->authorize('intranet_phonelist_run_job');
+        $ran = $this->jobs->process(sanitize_key(wp_unslash($_POST['job'] ?? '')));
+        $this->redirect(['notice' => $ran ? 'job_ran' : 'job_busy']);
     }
 
     public function handleDeleteLogs(): void
@@ -59,6 +70,8 @@ final class SettingsPage
         $tab = isset(self::TABS[$_GET['tab'] ?? '']) ? $_GET['tab'] : 'jobs';
         $notices = [
             'import_started' => ['success', 'Oracle import started in the background. Its results show in the Logs tab.'],
+            'job_ran' => ['success', 'Job run. Its results are below.'],
+            'job_busy' => ['warning', 'That job wasn\'t run: another job is running, or it has already finished.'],
             'logs_deleted' => ['success', sprintf('Deleted %d log entries.', absint($_GET['count'] ?? 0))],
         ];
         $notice = $notices[$_GET['notice'] ?? ''] ?? null;
@@ -120,7 +133,17 @@ final class SettingsPage
                     <td><?= (int) $job['done'] ?> / <?= (int) $job['total'] ?></td>
                     <td><?= esc_html(implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts))) ?></td>
                     <td><?= esc_html($when($job['finished_at'])) ?></td>
-                    <td><button type="button" class="button button-small iphl-toggle" aria-expanded="false" aria-controls="iphl-job-<?= esc_attr($job['id']) ?>">View</button></td>
+                    <td>
+                        <button type="button" class="button button-small iphl-toggle" aria-expanded="false" aria-controls="iphl-job-<?= esc_attr($job['id']) ?>">View</button>
+                        <?php if (in_array($job['status'], ['queued', 'failed'], true)) : ?>
+                            <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>" style="display:inline">
+                                <input type="hidden" name="action" value="intranet_phonelist_run_job">
+                                <input type="hidden" name="job" value="<?= esc_attr($job['id']) ?>">
+                                <?php wp_nonce_field('intranet_phonelist_run_job'); ?>
+                                <button type="submit" class="button button-small"><?= $job['status'] === 'failed' ? 'Retry' : 'Run now' ?></button>
+                            </form>
+                        <?php endif; ?>
+                    </td>
                 </tr>
                 <tr class="iphl-detail" id="iphl-job-<?= esc_attr($job['id']) ?>" hidden>
                     <td colspan="8"><pre><?= esc_html(wp_json_encode(['error' => $job['error'], 'results' => $job['results']], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)) ?></pre></td>

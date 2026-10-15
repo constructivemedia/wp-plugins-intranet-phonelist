@@ -166,6 +166,20 @@ final class Jobs
     }
 
     /**
+     * Run one job now (the Jobs tab's Run now, `wp phonelist job`). A failed job is retried with fresh attempts.
+     * Returns false if it isn't waiting or failed, or another job is running.
+     */
+    public function process(string $id): bool
+    {
+        if ($this->busy()) {
+            return false;
+        }
+        $this->db->query($this->db->prepare("UPDATE {$this->table} SET status = 'queued', attempts = 0, error = NULL WHERE id = %s AND status = 'failed'", $id));
+
+        return $this->run($id);
+    }
+
+    /**
      * After the current response has been sent, work through the queue (the new job included, in order).
      */
     public function runAfterResponse(): void
