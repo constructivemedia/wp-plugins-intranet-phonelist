@@ -5,6 +5,7 @@ namespace ConstructiveMedia\IntranetPhonelist;
 use ConstructiveMedia\IntranetPhonelist\Admin\Relationships;
 use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
+use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Cli\SyncCommand;
 use ConstructiveMedia\IntranetPhonelist\Sync\CompanyMap;
 use ConstructiveMedia\IntranetPhonelist\Sync\Log;
@@ -31,6 +32,7 @@ final class Plugin
         add_action('init', [$postTypes, 'register']);
         add_action('admin_menu', [$postTypes, 'registerMenu'], 9);
         add_action('acf/include_fields', [$postTypes, 'registerFields']);
+        $postTypes->lock();
         (new StaffController())->register();
 
         // A division's Company changed by hand: its staff's stored company follows straight away.
@@ -53,6 +55,7 @@ final class Plugin
         }
         if (defined('WP_CLI') && WP_CLI) {
             (new SyncCommand($synchronizer))->register();
+            (new ClubCommand())->register();
         }
     }
 }

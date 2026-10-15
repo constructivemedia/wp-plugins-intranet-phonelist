@@ -5,6 +5,7 @@ PHP_SAPI === 'cli' || exit;
 
 require __DIR__ . '/../vendor/autoload.php';
 
+use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Staff;
@@ -90,9 +91,9 @@ assert(Planner::unreadable($raw, $normalized, array_fill_keys(array_keys($raw), 
 $kinds = ['HIDE_BIRTHDAY' => PostTypes::BOOL, 'E_STATUS' => PostTypes::STATUS, 'MOBILE_NO' => PostTypes::PHONE, 'PH_EXT' => PostTypes::PHONE];
 $typed = fn (array $row) => Planner::normalize($row, $kinds, new DateTimeImmutable('2026-10-13'));
 $row = $typed(['HIDE_BIRTHDAY' => 'y', 'E_STATUS' => 'e', 'MOBILE_NO' => '0437793226', 'PH_EXT' => '(08) 94647800']);
-assert($row === ['HIDE_BIRTHDAY' => '1', 'E_STATUS' => 'active', 'MOBILE_NO' => '0437 793 226', 'PH_EXT' => '(08) 9464 7800']);
+assert($row === ['HIDE_BIRTHDAY' => '1', 'E_STATUS' => 'active', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '+61894647800']);
 $row = $typed(['HIDE_BIRTHDAY' => ' ', 'E_STATUS' => 'xcon', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '9464 7800']);
-assert($row === ['HIDE_BIRTHDAY' => '0', 'E_STATUS' => 'inactive', 'MOBILE_NO' => '0437 793 226', 'PH_EXT' => '(08) 9464 7800']); // no area code → 08
+assert($row === ['HIDE_BIRTHDAY' => '0', 'E_STATUS' => 'inactive', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '+61894647800']); // no area code → 08
 assert($typed(['HIDE_BIRTHDAY' => 'Y', 'E_STATUS' => 'E', 'MOBILE_NO' => '', 'PH_EXT' => ''])['HIDE_BIRTHDAY'] === '1');
 $raw = ['HIDE_BIRTHDAY' => '', 'E_STATUS' => '', 'MOBILE_NO' => '0894647800 - Bunbury', 'PH_EXT' => ''];
 assert($typed($raw)['MOBILE_NO'] === '0894647800 - Bunbury');                                       // unreadable: kept as it was
@@ -113,6 +114,11 @@ assert(CompanyMap::companyFor('JIT', 'JWH IT', true, $mapped) === 'JWH Group'); 
 assert(CompanyMap::companyFor('RBC', 'Rural Building Company', true, $mapped) === null);              // set by hand, not mapped: keep
 assert(CompanyMap::companyFor('RBC', 'Rural Building Company', false, $mapped) === 'Rural Building Company');
 assert(CompanyMap::companyFor('NEW', 'Brand New Division', false, []) === 'Brand New Division');      // works with no mapping at all
+
+// Club list import: level headings, description lines skipped, then name/company pairs; names compared loosely.
+$list =ClubCommand::parse("Lifetime Club\nOur lifetime club members.\n\nJane Citizen\nJWH Group\n\n40 Year Club\nCelebrating 40 years with JWH Group.\n\n\nAnn Smith-Jones\nPlunkett Homes\nMaria Santos Lima\nWA Country Builders, Drafting\n");
+assert($list === ['lifetime' => [['Jane Citizen', 'JWH Group']], '40' => [['Ann Smith-Jones', 'Plunkett Homes'], ['Maria Santos Lima', 'WA Country Builders, Drafting']]]);
+assert(ClubCommand::key('Dianne O’Malley') === ClubCommand::key("dianne o'malley") && ClubCommand::key('Derrick D’Souza') === 'derrickdsouza');
 
 // Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.
 $photoRow = fn (string $pref, string $first, string $last, string $div = 'JWH') => ['PREF_NAME' => $pref, 'NAME_FIRST' => $first, 'NAME_LAST_CO' => $last, 'DIV_CODE' => $div];

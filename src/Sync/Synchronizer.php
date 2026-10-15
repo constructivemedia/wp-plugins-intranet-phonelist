@@ -214,7 +214,7 @@ final class Synchronizer
                     continue;
                 }
                 foreach ($config['columns'] as $column) {
-                    update_field(PostTypes::fieldKey($type, $column), $item['row'][$column], $postId);
+                    PostTypes::store($postId, PostTypes::fieldKey($type, $column), strtolower($column), $item['row'][$column]);
                 }
 
                 if ($operation === 'create') {
@@ -328,7 +328,7 @@ final class Synchronizer
                     ? array_map('intval', (array) $stored) == $value
                     : (int) $stored === (int) $value;
                 if (!$same) {
-                    update_field(PostTypes::linkKey($name), $value, $postId);
+                    PostTypes::store($postId, PostTypes::linkKey($name), $name, $value);
                     $written++;
                 }
             }

@@ -31,6 +31,7 @@ Any WordPress constant can also be set there (`DB_*`, `WP_HOME`, `WP_DEBUG`, sal
 ```bash
 wp phonelist sync                  # full sync: mirror Oracle, delete anyone no longer there
 wp phonelist sync --staff=00001    # one person only; never deletes anyone else
+wp phonelist club-import list.txt --dry-run   # set JWH Club levels from a club page list (see JWH Club)
 ```
 
 - **Nightly cron**: `0 2 * * * wp phonelist sync --path=/path/to/wordpress`, run as the web server's user (not root, or uploaded photos end up owned by root). The command prints its progress and exits non-zero unless the run is fully clean.
@@ -73,10 +74,11 @@ Most columns are stored as Oracle sends them. These are converted once, at sync:
 | Columns | Stored as | Editor field |
 |---|---|---|
 | `DOB`, `START_DATE`, `INDUCTION_COMPLETE_DATE`, `ON_LEAVE` | `Ymd` dates (two-digit birth years resolve to the most recent past year) | Date picker |
-| `HIDE_BIRTHDAY` | `1` for `y`, otherwise `0` | True / false |
+| `HIDE_BIRTHDAY` | `1` for `y`, otherwise `0` | Select (Yes / No) |
 | `E_STATUS` | `active` for `e`, otherwise `inactive` | Select (Active / Inactive) |
-| `MOBILE_NO`, `PH_EXT`, `HOME_PHONE`, division `PHONE` and `FAX` | One format via libphonenumber: `0437 793 226`, `(08) 9464 7800` | Text |
+| `MOBILE_NO`, `PH_EXT`, `HOME_PHONE`, division `PHONE` and `FAX` | International (E.164) via libphonenumber: `+61437793226`, `+61894647800` | Text |
 
+- **Locked fields:** synced fields can't be changed in the editor. The sync writes them directly, and anything submitted for them from the editor is ignored. Hand-set fields (a division's Company, a staff member's JWH Club) stay editable.
 - **Area code:** 8-digit numbers with no area code are assumed to be WA (`08`); change `PhoneNumbers::DEFAULT_AREA_CODE` if that stops being true.
 - **Unreadable numbers** are kept as they were and listed in the `bad_data` warning so they can be fixed in HR.
 - **`PH_EXT`** holds direct phone numbers; the short extensions are in `VOIP`, which is stored as is.
@@ -131,13 +133,48 @@ Phonelist::staff(name: 'jul');                 // any word of the name starts wi
 Phonelist::staff(division: 'JWH', tag: '20');  // exact DIV_CODE and department code
 ```
 
-Both return `Staff` objects with these read-only properties:
+### JWH Club
+
+Each staff member has a **JWH Club** field in the editor sidebar: 10, 15, 20, 25, 30, 35 or 40 years, or Lifetime.
+- **Set by hand.** It isn't worked out from HR data, because service can have breaks. The sync never changes it.
+- **Leavers drop off** with their record, and anyone who comes back starts again.
+
+```php
+foreach (Phonelist::club() as $level => $group) {   // 'lifetime', 40, 35 … 10, in page order; empty levels left out
+    echo "<h2>{$group['title']}</h2>";               // e.g. '15 Year Club'
+    foreach ($group['members'] as $person) {         // Staff objects, sorted by name
+        echo "{$person->name} — {$person->company}";
+    }
+}
+```
+
+**Loading an existing list:** run `wp phonelist club-import list.txt`, with the list laid out like the club page: a level heading (`Lifetime Club`, `40 Year Club` …), then each member's name on one line and their company on the next.
+- **`--dry-run`** shows what would change without saving anything.
+- **Matching:** names are matched on the preferred name first, then the legal first name, then the email (`first.last@`, for surnames that hold a business name), ignoring case and punctuation. As a last resort, an email one letter different matches if exactly one person fits, and is listed for checking.
+- **Reported, not guessed:** names with no staff record and people listed twice (the higher level is kept).
+
+People with no staff record, such as retired Lifetime members, are added in the theme with a filter:
+
+```php
+use ConstructiveMedia\IntranetPhonelist\Staff;
+
+add_filter('intranet_phonelist_club', function (array $club): array {
+    $club['lifetime']['members'][] = Staff::manual('John Monkhouse', company: 'JWH Group');
+    $club['lifetime']['members'][] = Staff::manual('Ian Holloway', company: 'JWH Group');
+    return $club;
+});
+```
+
+### Staff objects
+
+`staff()`, `birthdays()` and `club()` all return `Staff` objects with these read-only properties:
 - `id`, `postId`
 - `name`, `firstName`, `lastName`
 - `position`, `email`, `mobile`, `extension` (the direct phone number from `PH_EXT`)
 - `divisionCode`, `division`, `company`
 - `tag` (department code), `tagDescription`
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
+- `club` (`'lifetime'`, `'40'` … `'10'`, or null)
 - `birthday`, `daysUntil` (from `birthdays()` only)
 
 DOB, home phone and other HR fields are never exposed.
@@ -146,9 +183,13 @@ DOB, home phone and other HR fields are never exposed.
 
 ```
 GET /wp-json/phonelist/v1/staff?name=jul&division=JWH&tag=20
+GET /wp-json/phonelist/v1/club
 ```
 
-This is the same as `Phonelist::staff()`, returned as JSON. Any logged-in user can call it:
+- **`/staff`** is the same as `Phonelist::staff()`, returned as JSON.
+- **`/club`** is `Phonelist::club()`, returned as a list in page order: `[{"level": "lifetime", "title": "Lifetime Club", "members": [...]}, {"level": "40", …}]`. The filter applies here too.
+
+Any logged-in user can call them:
 - **Intranet pages:** the login cookie plus an `X-WP-Nonce` header (`wp_create_nonce('wp_rest')`).
 - **Scripts and other systems:** an Application Password from the user's profile, sent as HTTP Basic auth.
 

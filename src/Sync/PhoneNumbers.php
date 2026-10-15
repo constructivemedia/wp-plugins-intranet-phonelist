@@ -7,7 +7,7 @@ use libphonenumber\PhoneNumberFormat;
 use libphonenumber\PhoneNumberUtil;
 
 /**
- * Phone numbers from Oracle in one format (Australian national: '0437 793 226', '(08) 9464 7800'),
+ * Phone numbers from Oracle in one format, international E.164 ('+61437793226', '+61894647800'),
  * using giggsey/libphonenumber-for-php-lite.
  */
 final class PhoneNumbers
@@ -25,7 +25,7 @@ final class PhoneNumbers
     }
 
     /**
-     * '0437793226' → '0437 793 226', '9464 7800' → '(08) 9464 7800', '' → ''. Null if it isn't a valid number.
+     * '0437 793 226' → '+61437793226', '9464 7800' → '+61894647800', '' → ''. Null if it isn't a valid number.
      */
     public static function format(string $value): ?string
     {
@@ -44,6 +44,6 @@ final class PhoneNumbers
             return null;
         }
 
-        return $util->isValidNumber($number) ? $util->format($number, PhoneNumberFormat::NATIONAL) : null;
+        return $util->isValidNumber($number) ? $util->format($number, PhoneNumberFormat::E164) : null;
     }
 }

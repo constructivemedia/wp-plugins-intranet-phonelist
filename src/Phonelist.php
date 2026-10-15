@@ -52,6 +52,36 @@ final class Phonelist
     }
 
     /**
+     * The JWH Club page: levels in order (Lifetime, 40 … 10), each with its members sorted by name. Empty levels are left out.
+     * Add people with no staff record (e.g. retired Lifetime members) with the 'intranet_phonelist_club' filter:
+     *
+     *     add_filter('intranet_phonelist_club', function (array $club): array {
+     *         $club['lifetime']['members'][] = Staff::manual('John Monkhouse', company: 'JWH Group');
+     *         return $club;
+     *     });
+     *
+     * @return array<string|int, array{title: string, members: Staff[]}> Keyed by level ('lifetime', 40 … 10).
+     */
+    public static function club(): array
+    {
+        $club = array_map(fn (string $title): array => ['title' => $title, 'members' => []], PostTypes::CLUB);
+        foreach (self::staffPosts() as $post) {
+            $level = (string) get_post_meta($post->ID, 'club', true);
+            if (isset($club[$level])) {
+                $club[$level]['members'][] = self::toStaff($post);
+            }
+        }
+
+        $club = apply_filters('intranet_phonelist_club', $club);
+        foreach ($club as &$group) {
+            usort($group['members'], fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
+        }
+        unset($group);
+
+        return array_filter($club, fn (array $group): bool => $group['members'] !== []);
+    }
+
+    /**
      * Staff whose next birthday is within $days days (0 = today only), soonest first.
      * Excludes anyone who opted out in HR (HIDE_BIRTHDAY) or has no usable DOB.
      *
@@ -140,6 +170,7 @@ final class Phonelist
             daysUntil: $daysUntil,
             photoId: $photoId ?: null,
             photoUrl: $photoId ? (wp_get_attachment_image_url($photoId, 'full') ?: null) : null,
+            club: $meta('club') ?: null,
         );
     }
 

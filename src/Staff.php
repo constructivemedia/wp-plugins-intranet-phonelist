@@ -36,7 +36,35 @@ final class Staff implements JsonSerializable
         public readonly ?int $photoId = null,
         /** Full-size photo URL. Null without a photo. */
         public readonly ?string $photoUrl = null,
+        /** JWH Club level: 'lifetime', '40', '35' … '10' (see PostTypes::CLUB), or null. */
+        public readonly ?string $club = null,
     ) {
+    }
+
+    /**
+     * Someone with no staff record, e.g. a retired Lifetime Club member added with the 'intranet_phonelist_club' filter.
+     */
+    public static function manual(string $name, string $company = '', string $division = '', ?string $club = null): self
+    {
+        $parts = explode(' ', $name, 2);
+
+        return new self(
+            id: '',
+            postId: 0,
+            name: $name,
+            firstName: $parts[0],
+            lastName: $parts[1] ?? '',
+            position: '',
+            email: '',
+            mobile: '',
+            extension: '',
+            divisionCode: '',
+            division: $division,
+            company: $company,
+            tag: '',
+            tagDescription: '',
+            club: $club,
+        );
     }
 
     public function jsonSerialize(): array

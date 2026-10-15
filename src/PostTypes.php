@@ -9,11 +9,11 @@ final class PostTypes
 {
     /** Value kinds: how a synced column is converted at sync and shown in the editor. */
     public const DATE = 'date';
-    /** 'y' → true ('1'), anything else → false ('0'); an ACF true/false field. */
+    /** 'y' → '1', anything else → '0'; a locked Yes/No select (a checkbox's label stays clickable). */
     public const BOOL = 'bool';
     /** 'e' → 'active', anything else → 'inactive'; an ACF select. */
     public const STATUS = 'status';
-    /** Formatted with libphonenumber ('0437 793 226', '(08) 9464 7800'); unreadable numbers are kept as they are. */
+    /** Stored in international E.164 format via libphonenumber ('+61437793226'); unreadable numbers are kept as they are. */
     public const PHONE = 'phone';
     public const STATUS_CHOICES = ['active' => 'Active', 'inactive' => 'Inactive'];
     /** Two-digit years resolve to the most recent past year: a birth date is never in the future. */
@@ -34,6 +34,21 @@ final class PostTypes
         'division' => ['label' => 'Division', 'type' => self::DIVISION, 'multiple' => false],
         'company' => ['label' => 'Company', 'type' => self::COMPANY, 'multiple' => false],
         'reports_to' => ['label' => 'Reports To', 'type' => self::STAFF, 'multiple' => true],
+    ];
+
+    /**
+     * JWH Club levels, in page order. Set by hand on each staff member (not from HR: service can have breaks).
+     * Leavers drop off with their record; retired Lifetime members are added with the 'intranet_phonelist_club' filter.
+     */
+    public const CLUB = [
+        'lifetime' => 'Lifetime Club',
+        '40' => '40 Year Club',
+        '35' => '35 Year Club',
+        '30' => '30 Year Club',
+        '25' => '25 Year Club',
+        '20' => '20 Year Club',
+        '15' => '15 Year Club',
+        '10' => '10 Year Club',
     ];
 
     /** HR fields kept out of the log: it records that they changed, never their values. */
@@ -210,7 +225,7 @@ final class PostTypes
                 foreach ($columns as $column => [$label, $width]) {
                     $kind = match ($config['kinds'][$column] ?? null) {
                         self::DATE, self::BIRTH_DATE => ['type' => 'date_picker', 'display_format' => 'j M Y', 'return_format' => 'Ymd'],
-                        self::BOOL => ['type' => 'true_false', 'ui' => 1, 'disabled' => 1],
+                        self::BOOL => ['type' => 'select', 'choices' => ['1' => 'Yes', '0' => 'No'], 'disabled' => 1],
                         self::STATUS => ['type' => 'select', 'choices' => self::STATUS_CHOICES, 'disabled' => 1],
                         default => [],
                     };
@@ -220,7 +235,7 @@ final class PostTypes
                         'label' => $label,
                         'type' => 'text',
                         'readonly' => 1,
-                        'wrapper' => ['width' => $width],
+                        'wrapper' => ['width' => $width, 'class' => 'iphl-locked'],
                     ];
                 }
             }
@@ -249,6 +264,23 @@ final class PostTypes
             'position' => 'side',
         ]);
 
+        // JWH Club: set by hand, never by the sync.
+        acf_add_local_field_group([
+            'key' => 'group_iphl_staff_club',
+            'title' => 'JWH Club',
+            'fields' => [[
+                'key' => 'field_iphl_staff_club',
+                'name' => 'club',
+                'label' => 'Club',
+                'type' => 'select',
+                'choices' => self::CLUB,
+                'allow_null' => 1,
+                'return_format' => 'value',
+            ]],
+            'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => self::STAFF]]],
+            'position' => 'side',
+        ]);
+
         // Staff links, stored by the sync so Admin Columns and queries can use them. Hidden in the editor
         // (the Relationships box shows them) and disabled, so a manual save never overwrites them.
         acf_add_local_field_group([
@@ -274,5 +306,43 @@ final class PostTypes
     public static function linkKey(string $name): string
     {
         return 'field_iphl_staff_link_' . $name;
+    }
+
+    /**
+     * Write a synced value the way ACF stores it (value + field-key reference), bypassing ACF's save path,
+     * which lock() closes to everyone else.
+     */
+    public static function store(int $postId, string $fieldKey, string $name, mixed $value): void
+    {
+        update_post_meta($postId, $name, $value);
+        update_post_meta($postId, '_' . $name, $fieldKey);
+    }
+
+    /**
+     * Synced fields and staff links can't be changed from the editor: whatever is submitted, the stored value is kept.
+     * (ACF's 'disabled'/'readonly' is only visual and isn't honoured by every field type.) Hand-set fields stay editable.
+     */
+    public function lock(): void
+    {
+        $locked = [];
+        foreach (self::synced() as $type => $config) {
+            foreach ($config['columns'] as $column) {
+                $locked[self::fieldKey($type, $column)] = strtolower($column);
+            }
+        }
+        foreach (array_keys(self::STAFF_LINKS) as $name) {
+            $locked[self::linkKey($name)] = $name;
+        }
+
+        foreach ($locked as $key => $name) {
+            add_filter("acf/update_value/key=$key", fn ($value, $postId) => get_post_meta((int) $postId, $name, true), 10, 2);
+        }
+
+        // And make them look locked: no clicking, typing or date pickers.
+        add_action('admin_head', function (): void {
+            if (in_array(get_current_screen()?->post_type, [self::DIVISION, self::STAFF], true)) {
+                echo '<style>.iphl-locked .acf-input { pointer-events: none; opacity: .75; }</style>';
+            }
+        });
     }
 }
