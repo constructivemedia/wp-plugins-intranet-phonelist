@@ -13,8 +13,8 @@ final class Log
     public const LEVELS = ['error', 'warning', 'notice', 'info', 'debug'];
 
     private const DEFAULT_DAYS = 90;
-    /** Rows deleted per query when pruning, so the table is never locked for long. */
-    private const PRUNE_CHUNK = 1000;
+    /** Rows deleted per query, so the table is never locked for long. */
+    private const DELETE_CHUNK = 1000;
 
     /** Bump when the table changes; the table is upgraded on the next load. */
     private const SCHEMA = '4';
@@ -50,7 +50,6 @@ final class Log
             KEY action (action),
             KEY source (post_type,source_id)
         ) {$this->db->get_charset_collate()};");
-        $this->db->query("UPDATE {$this->table} SET triggered_by = 'manual' WHERE triggered_by = 'button'"); // Renamed in schema 3.
         update_option(self::SCHEMA_OPTION, self::SCHEMA);
     }
 
@@ -151,34 +150,29 @@ final class Log
     }
 
     /**
-     * Delete entries older than days(), a chunk at a time. Returns rows deleted.
+     * Delete entries older than days(). Run daily. Returns rows deleted.
      */
     public function prune(): int
     {
-        $before = gmdate('Y-m-d H:i:s', time() - self::days() * DAY_IN_SECONDS);
-        $total = 0;
-        for ($round = 0; $round < 50; $round++) {
-            $deleted = (int) $this->db->query($this->db->prepare(
-                "DELETE FROM {$this->table} WHERE created_at < %s ORDER BY id LIMIT %d",
-                $before,
-                self::PRUNE_CHUNK
-            ));
-            $total += $deleted;
-            if ($deleted < self::PRUNE_CHUNK) {
-                break;
-            }
-        }
-
-        return $total;
+        return $this->delete(self::days());
     }
 
     /**
-     * Delete entries older than $days, or everything when $days is 0. Returns rows deleted.
+     * Delete entries older than $days, or everything when $days is 0, a chunk at a time. Returns rows deleted.
      */
     public function delete(int $days = 0): int
     {
-        return (int) ($days > 0
-            ? $this->db->query($this->db->prepare("DELETE FROM {$this->table} WHERE created_at < %s", gmdate('Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS)))
-            : $this->db->query("DELETE FROM {$this->table}"));
+        $before = $days > 0 ? gmdate('Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS) : '9999-12-31 23:59:59';
+        $total = 0;
+        do {
+            $deleted = (int) $this->db->query($this->db->prepare(
+                "DELETE FROM {$this->table} WHERE created_at < %s ORDER BY id LIMIT %d",
+                $before,
+                self::DELETE_CHUNK
+            ));
+            $total += $deleted;
+        } while ($deleted === self::DELETE_CHUNK);
+
+        return $total;
     }
 }

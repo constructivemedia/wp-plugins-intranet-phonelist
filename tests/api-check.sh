@@ -92,6 +92,8 @@ sleep 3
 expect "job status" 200 "$(request GET "/jobs/$JOB" '' signed)"
 has "job is done" '"status":"done"'
 has "both items applied" '"result":"updated"'
+expect "companies list" 200 "$(request GET /companies '' app)"
+has "lists companies WordPress created, with no Data Hub ID" '"id":null,"updated_at":null,"name":"Test Api Division"'
 expect "job status needs a signature" 401 "$(request GET "/jobs/$JOB" '' tampered)"
 expect "club for logged-in users" 200 "$(request GET /club '' app)"
 expect "DELETE without updated_at is invalid" 422 "$(request DELETE /staff/test-api-1 '' signed)"

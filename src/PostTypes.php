@@ -60,6 +60,36 @@ final class PostTypes
     /** The Phonelist menu opens the Staff list. */
     public const MENU = 'edit.php?post_type=' . self::STAFF;
 
+    /**
+     * The post holding a Data Hub ID, or 0.
+     */
+    public static function postId(string $postType, string $id): int
+    {
+        global $wpdb;
+
+        return $id === '' ? 0 : (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT p.ID FROM $wpdb->posts p JOIN $wpdb->postmeta m ON m.post_id = p.ID
+            WHERE p.post_type = %s AND m.meta_key = %s AND m.meta_value = %s ORDER BY p.ID LIMIT 1",
+            $postType,
+            self::SOURCE_ID,
+            $id
+        ));
+    }
+
+    /**
+     * @return string[] Every Data Hub ID held for a post type.
+     */
+    public static function sourceIds(string $postType): array
+    {
+        global $wpdb;
+
+        return $wpdb->get_col($wpdb->prepare(
+            "SELECT m.meta_value FROM $wpdb->posts p JOIN $wpdb->postmeta m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s",
+            $postType,
+            self::SOURCE_ID
+        ));
+    }
+
     public static function fieldKey(string $postType, string $field): string
     {
         return 'field_iphl_' . self::shortName($postType) . '_' . $field;

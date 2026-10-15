@@ -18,13 +18,13 @@ final class Photos
     /** @var array<string, string>|null Match key => file path, built once per request. */
     private ?array $index = null;
 
-    public function __construct(private readonly string $dir, private readonly Log $log)
+    public function __construct(private readonly string $dir)
     {
     }
 
-    public static function fromConstants(Log $log): self
+    public static function fromConstants(): self
     {
-        return new self(defined('INTRANET_PHONELIST_PHOTOS_DIR') ? (string) INTRANET_PHONELIST_PHOTOS_DIR : '', $log);
+        return new self(defined('INTRANET_PHONELIST_PHOTOS_DIR') ? (string) INTRANET_PHONELIST_PHOTOS_DIR : '');
     }
 
     public function enabled(): bool
@@ -38,7 +38,7 @@ final class Photos
     }
 
     /**
-     * Give a staff post its photo after a write. Returns 'added', 'replaced', 'failed', or null (nothing to do).
+     * Give a staff post its photo after a write. Returns what went wrong, or null.
      *
      * @param array<string, ?string> $data The staff member's stored values.
      */
@@ -48,12 +48,9 @@ final class Photos
         if ($url !== null && $url !== '' && ($created || $url !== get_post_meta($postId, self::URL, true))) {
             return $this->fromUrl($postId, $url);
         }
-        if ($created) {
-            $file = $this->find($data);
-            return $file === null ? null : $this->attach($postId, $file, basename($file), false);
-        }
+        $file = $created ? $this->find($data) : null;
 
-        return null;
+        return $file === null ? null : $this->attach($postId, $file, basename($file), false);
     }
 
     /**
@@ -92,24 +89,22 @@ final class Photos
         $this->loadMediaFunctions();
         $file = download_url($url, self::DOWNLOAD_TIMEOUT);
         if (is_wp_error($file)) {
-            $this->log->write('', 'system', 'warning', 'photo_failed', 'iphl_staff', (string) get_post_meta($postId, '_iphl_source_id', true), get_post_field('post_title', $postId, 'raw'), "Couldn't download $url: " . $file->get_error_message());
-            return 'failed';
+            return "Couldn't download the photo: " . $file->get_error_message();
         }
 
-        $name = basename((string) parse_url($url, PHP_URL_PATH)) ?: 'photo.jpg';
-        $result = $this->attach($postId, $file, $name, true);
-        if ($result !== 'failed') {
+        $problem = $this->attach($postId, $file, basename((string) parse_url($url, PHP_URL_PATH)) ?: 'photo.jpg', true);
+        if ($problem === null) {
             update_post_meta($postId, self::URL, wp_slash($url));
         }
 
-        return $result;
+        return $problem;
     }
 
     /**
-     * Upload a file to the Media Library as the post's featured image, replacing any previous one.
-     * $move: the file is a temporary download that may be moved; otherwise a copy is uploaded and the original kept.
+     * Upload a file to the Media Library as the post's featured image, replacing any previous one. Returns what went
+     * wrong, or null. $move: the file is a temporary download that may be moved; otherwise a copy is uploaded.
      */
-    private function attach(int $postId, string $file, string $name, bool $move): string
+    private function attach(int $postId, string $file, string $name, bool $move): ?string
     {
         $this->loadMediaFunctions();
         $upload = $file;
@@ -121,8 +116,7 @@ final class Photos
         $attachmentId = media_handle_sideload(['name' => $name, 'tmp_name' => $upload], $postId, get_post_field('post_title', $postId, 'raw'));
         if (is_wp_error($attachmentId)) {
             @unlink($upload);
-            $this->log->write('', 'system', 'warning', 'photo_failed', 'iphl_staff', (string) get_post_meta($postId, '_iphl_source_id', true), get_post_field('post_title', $postId, 'raw'), "Couldn't add $name: " . $attachmentId->get_error_message());
-            return 'failed';
+            return "Couldn't add $name to the Media Library: " . $attachmentId->get_error_message();
         }
 
         $previous = (int) get_post_thumbnail_id($postId);
@@ -131,7 +125,7 @@ final class Photos
             wp_delete_attachment($previous, true);
         }
 
-        return $previous ? 'replaced' : 'added';
+        return null;
     }
 
     private function find(array $data): ?string

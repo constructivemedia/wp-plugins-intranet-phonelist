@@ -176,6 +176,7 @@ paths:
     get:
       operationId: listRecords
       summary: Read every record of one type
+      description: Every record WordPress holds, including ones it made itself (such as a company created for a new division), which have a null id.
       security:
         - PhonelistSignature: []
         - WordPressUser: []

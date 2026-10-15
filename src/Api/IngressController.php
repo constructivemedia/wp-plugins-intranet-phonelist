@@ -97,12 +97,8 @@ final class IngressController
     public function snapshot(WP_REST_Request $request): WP_REST_Response
     {
         $records = $this->items($request, 'records', self::MAX_SNAPSHOT);
-        if ($records instanceof WP_REST_Response) {
-            return $records;
-        }
-        $items = array_map(fn ($record): array => ['id' => is_array($record) ? ($record['id'] ?? null) : null, 'data' => is_array($record) ? $record : []], $records);
 
-        return $this->queue($request, 'snapshot', $request['type'], $items);
+        return $records instanceof WP_REST_Response ? $records : $this->queue($request, 'snapshot', $request['type'], $records);
     }
 
     public function batch(WP_REST_Request $request): WP_REST_Response
@@ -164,7 +160,7 @@ final class IngressController
         return $response;
     }
 
-    public static function ours(WP_REST_Request $request): bool
+    private static function ours(WP_REST_Request $request): bool
     {
         return str_starts_with($request->get_route(), '/' . self::NAMESPACE);
     }

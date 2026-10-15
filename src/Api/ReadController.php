@@ -2,7 +2,6 @@
 
 namespace ConstructiveMedia\IntranetPhonelist\Api;
 
-use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Schema;
@@ -14,18 +13,16 @@ use WP_REST_Server;
 /**
  * Reads, for logged-in users (cookie + nonce, or an Application Password) and signed requests:
  *
- *     GET /phonelist/v2/{type}/{id}   one record, as Data Hub sends it
- *     GET /phonelist/v2/{type}        all records; staff can be filtered by name, division_id and department_code
+ *     GET /phonelist/v2/{type}/{id}   one record, by Data Hub ID, in the shape Data Hub sends
+ *     GET /phonelist/v2/{type}        every record held, in the same shape (id is null for records WordPress made,
+ *                                     e.g. a company created for a new division); staff can be filtered by name,
+ *                                     division_id and department_code
  *     GET /phonelist/v2/club          the JWH Club page (Phonelist::club())
  *
  * Private fields (date_of_birth, home_phone) are only returned to signed requests.
  */
 final class ReadController
 {
-    public function __construct(private readonly Ingestor $ingestor)
-    {
-    }
-
     public function register(): void
     {
         add_action('rest_api_init', function (): void {
@@ -58,7 +55,7 @@ final class ReadController
 
     public function one(WP_REST_Request $request): WP_REST_Response
     {
-        $postId = $this->ingestor->postId($request['type'], $request['id']);
+        $postId = PostTypes::postId(Schema::TYPES[$request['type']], $request['id']);
 
         return $postId
             ? new WP_REST_Response(self::record($request['type'], get_post($postId), self::signed($request)))
@@ -69,13 +66,12 @@ final class ReadController
     {
         $type = $request['type'];
         $signed = self::signed($request);
-        $posts = get_posts(['post_type' => Schema::TYPES[$type], 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC', 'meta_key' => PostTypes::SOURCE_ID]);
+        $posts = get_posts(['post_type' => Schema::TYPES[$type], 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']);
         update_meta_cache('post', wp_list_pluck($posts, 'ID'));
         $records = array_map(fn (WP_Post $post): array => self::record($type, $post, $signed), $posts);
 
         if ($type === 'staff') {
-            $name = trim((string) $request['name']);
-            $records = array_values(array_filter($records, fn (array $record): bool => ($name === '' || preg_match('/(^|[\s\-])' . preg_quote($name, '/') . '/iu', PostTypes::displayName($record['preferred_name'], $record['first_name'], $record['last_name'])))
+            $records = array_values(array_filter($records, fn (array $record): bool => Phonelist::nameMatches(PostTypes::displayName($record['preferred_name'], $record['first_name'], $record['last_name']), $request['name'])
                 && ((string) $request['division_id'] === '' || $record['division_id'] === $request['division_id'])
                 && ((string) $request['department_code'] === '' || $record['department_code'] === $request['department_code'])));
         }
@@ -100,10 +96,10 @@ final class ReadController
      * A stored record in the contract's shape: id, updated_at, then every field (dates as YYYY-MM-DD, real booleans,
      * null when empty). Private fields only when $private.
      */
-    public static function record(string $type, WP_Post $post, bool $private): array
+    private static function record(string $type, WP_Post $post, bool $private): array
     {
         $record = [
-            'id' => (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true),
+            'id' => (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true) ?: null,
             'updated_at' => (string) get_post_meta($post->ID, PostTypes::UPDATED_AT, true) ?: null,
         ];
         foreach (Schema::fields($type) as $name => $config) {

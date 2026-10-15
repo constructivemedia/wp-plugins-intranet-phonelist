@@ -2,7 +2,6 @@
 
 namespace ConstructiveMedia\IntranetPhonelist;
 
-use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use wpdb;
 
 /**
@@ -15,7 +14,7 @@ use wpdb;
  */
 final class Relations
 {
-    public function __construct(private readonly Log $log, private readonly wpdb $db)
+    public function __construct(private readonly wpdb $db)
     {
     }
 
@@ -28,9 +27,15 @@ final class Relations
         }, 20);
     }
 
-    public function afterWrite(string $type, int $postId, bool $created): void
+    /**
+     * Link a record just written. Returns changes worth logging with it: a new division's company.
+     *
+     * @return array<string, array{from: null, to: string}>
+     */
+    public function afterWrite(string $type, int $postId, bool $created): array
     {
         $id = (string) get_post_meta($postId, PostTypes::SOURCE_ID, true);
+        $changes = [];
 
         if ($type === 'staff') {
             $this->linkStaff($postId);
@@ -41,36 +46,16 @@ final class Relations
             if ($created && !(int) get_post_meta($postId, 'company', true)) {
                 // A company named after the division, unless 'intranet_phonelist_new_division_company' names another (the Oracle import does).
                 $name = (string) apply_filters('intranet_phonelist_new_division_company', get_post_field('post_title', $postId, 'raw'), $id);
-                PostTypes::store($postId, 'field_iphl_division_company', 'company', $this->companyFor($name));
+                [$companyId, $new] = $this->companyFor($name);
+                PostTypes::store($postId, 'field_iphl_division_company', 'company', $companyId ?: '');
+                $changes['company'] = ['from' => null, 'to' => $name . ($new ? ' (new company)' : '')];
             }
             foreach ($this->staffWhere('division_id', $id) as $staff) {
                 $this->linkStaff($staff);
             }
         }
-    }
 
-    /**
-     * The company with exactly this name, created if there isn't one (with no Data Hub ID).
-     */
-    public function companyFor(string $name): int
-    {
-        $existing = (int) $this->db->get_var($this->db->prepare(
-            "SELECT ID FROM {$this->db->posts} WHERE post_type = %s AND post_status = 'publish' AND post_title = %s ORDER BY ID LIMIT 1",
-            PostTypes::COMPANY,
-            $name
-        ));
-        if ($existing) {
-            return $existing;
-        }
-
-        $id = wp_insert_post(wp_slash(['post_type' => PostTypes::COMPANY, 'post_status' => 'publish', 'post_title' => $name]), true);
-        if (is_wp_error($id)) {
-            $this->log->write('', 'system', 'error', 'error', PostTypes::COMPANY, null, $name, $id->get_error_message());
-            return 0;
-        }
-        $this->log->write('', 'system', 'info', 'created', PostTypes::COMPANY, null, $name, 'Created for a new division.');
-
-        return $id;
+        return $changes;
     }
 
     /**
@@ -119,13 +104,33 @@ final class Relations
     }
 
     /**
+     * The company with exactly this name, created if there isn't one (with no Data Hub ID).
+     *
+     * @return array{0: int, 1: bool} [company post ID (0 if it couldn't be created), whether it was created]
+     */
+    private function companyFor(string $name): array
+    {
+        $existing = (int) $this->db->get_var($this->db->prepare(
+            "SELECT ID FROM {$this->db->posts} WHERE post_type = %s AND post_status = 'publish' AND post_title = %s ORDER BY ID LIMIT 1",
+            PostTypes::COMPANY,
+            $name
+        ));
+        if ($existing) {
+            return [$existing, false];
+        }
+        $id = wp_insert_post(wp_slash(['post_type' => PostTypes::COMPANY, 'post_status' => 'publish', 'post_title' => $name]));
+
+        return [(int) $id, (bool) $id];
+    }
+
+    /**
      * Set a staff member's division, company and manager from division_id, the division's company and reports_to.
      * Only changed links are written.
      */
     private function linkStaff(int $staffPostId): void
     {
-        $division = $this->postBySource(PostTypes::DIVISION, (string) get_post_meta($staffPostId, 'division_id', true));
-        $manager = $this->postBySource(PostTypes::STAFF, (string) get_post_meta($staffPostId, 'reports_to', true));
+        $division = PostTypes::postId(PostTypes::DIVISION, (string) get_post_meta($staffPostId, 'division_id', true));
+        $manager = PostTypes::postId(PostTypes::STAFF, (string) get_post_meta($staffPostId, 'reports_to', true));
         $links = [
             'division' => $division,
             'company' => $division ? (int) get_post_meta($division, 'company', true) : 0,
@@ -162,20 +167,5 @@ final class Relations
             WHERE p.post_type IN ($in) AND m.meta_key = %s AND m.meta_value = %s",
             [...$postTypes, $key, $value]
         )));
-    }
-
-    private function postBySource(string $postType, string $id): int
-    {
-        if ($id === '') {
-            return 0;
-        }
-
-        return (int) $this->db->get_var($this->db->prepare(
-            "SELECT p.ID FROM {$this->db->posts} p JOIN {$this->db->postmeta} m ON m.post_id = p.ID
-            WHERE p.post_type = %s AND m.meta_key = %s AND m.meta_value = %s ORDER BY p.ID LIMIT 1",
-            $postType,
-            PostTypes::SOURCE_ID,
-            $id
-        ));
     }
 }

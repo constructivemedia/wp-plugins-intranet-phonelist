@@ -27,16 +27,14 @@ $cleanUp = function () use ($wpdb, $logTable): void {
         wp_delete_post((int) $id, true);
     }
     $wpdb->query("DELETE FROM $logTable WHERE run_id LIKE 'test-%' OR source_id LIKE 'test-%' OR label LIKE 'Test %'");
-    $wpdb->query("DELETE FROM $wpdb->options WHERE option_name LIKE 'iphl\\_tomb\\_%' AND option_value LIKE '%\"test-%'");
-    wp_cache_flush();
-    if (method_exists(Plugin::class, 'jobs')) {
-        $jobsTable = $wpdb->prefix . 'iphl_jobs';
-        $testJobs = $wpdb->get_col("SELECT id FROM $jobsTable WHERE idempotency_key LIKE 'test-%' OR payload LIKE '%\"test-%'");
-        foreach ($testJobs as $jobId) {
-            $wpdb->query($wpdb->prepare("DELETE FROM $logTable WHERE run_id = %s", $jobId));
-            $wpdb->delete($jobsTable, ['id' => $jobId]);
-        }
+    $tombstones = get_option('intranet_phonelist_deleted', []);
+    update_option('intranet_phonelist_deleted', array_filter($tombstones, fn (string $key): bool => !str_contains($key, ':test-'), ARRAY_FILTER_USE_KEY), false);
+    $jobsTable = $wpdb->prefix . 'iphl_jobs';
+    foreach ($wpdb->get_col("SELECT id FROM $jobsTable WHERE idempotency_key LIKE 'test-%' OR payload LIKE '%\"test-%'") as $jobId) {
+        $wpdb->query($wpdb->prepare("DELETE FROM $logTable WHERE run_id = %s", $jobId));
+        $wpdb->delete($jobsTable, ['id' => $jobId]);
     }
+    wp_cache_flush();
 };
 
 $cleanUp();
@@ -134,9 +132,9 @@ try {
     assert($link($s1, 'company') === $other);
     $in->put('divisions', 'test-RD2', ['name' => 'Test Relations Division', 'updated_at' => $t1], 'test-run', 'api');
     assert($link($in->postId('divisions', 'test-RD2'), 'company') === $c);                     // reuses by name, no duplicate
-    $in->delete('staff', 'test-s2', null, 'test-run', 'api');
+    $in->delete('staff', 'test-s2', $t2, 'test-run', 'api');
     assert($link($s1, 'manager') === 0);                                                      // deleted manager unlinked
-    $in->delete('divisions', 'test-RD', null, 'test-run', 'api');
+    $in->delete('divisions', 'test-RD', $t2, 'test-run', 'api');
     assert($link($s1, 'division') === 0 && $link($s1, 'company') === 0);
     $in->put('divisions', 'test-RD', ['name' => 'Test Relations Division', 'updated_at' => $t2], 'test-run', 'api');
     assert($link($s1, 'division') === $in->postId('divisions', 'test-RD'));                   // re-added: staff waiting on it are linked
@@ -149,8 +147,8 @@ try {
     wp_mkdir_p($folder);
     $image = imagecreatetruecolor(1, 1);
     imagejpeg($image, "$folder/jane_test_test-pd.jpg");
-    $photos = new Photos($folder, $log);
-    $withPhotos = new Ingestor($log, $wpdb, Plugin::relations(), $photos);
+    $photos = new Photos($folder);
+    $withPhotos = new Ingestor($log, Plugin::relations(), $photos);
     $withPhotos->put('staff', 'test-p1', $jane + ['division_id' => 'test-PD', 'updated_at' => $t1], 'test-run', 'api');
     $p1 = $withPhotos->postId('staff', 'test-p1');
     assert(has_post_thumbnail($p1));
@@ -158,8 +156,8 @@ try {
     assert($withPhotos->put('staff', 'test-p1', $jane + ['division_id' => 'test-PD', 'position' => 'New', 'updated_at' => $t2], 'test-run', 'api')->result === 'updated');
     assert(!has_post_thumbnail($p1));                                                           // not re-added
     $failed = $withPhotos->patch('staff', 'test-p1', ['photo_url' => 'https://127.0.0.1:1/x.jpg', 'updated_at' => $t2], 'test-run', 'api');
-    assert($failed->result === 'updated' && !has_post_thumbnail($p1));
-    assert($photos->afterWrite($p1, ['photo_url' => 'https://127.0.0.1:1/x.jpg'], false) === 'failed');
+    assert($failed->result === 'updated' && !has_post_thumbnail($p1) && $failed->warnings[0]['field'] === 'photo_url');
+    assert(is_string($photos->afterWrite($p1, ['photo_url' => 'https://127.0.0.1:1/x.jpg'], false)));
     assert($photos->afterWrite($p1, ['photo_url' => null], false) === null);
     array_map('unlink', glob("$folder/*"));
     rmdir($folder);
@@ -210,7 +208,7 @@ try {
         ['op' => 'put', 'type' => 'staff', 'data' => $jane + ['updated_at' => $t1]],                                  // no id
     ], 'test-key-1', 'api');
     assert(!$job['existing'] && $jobs->create('batch', null, [], 'test-key-1', 'api')['id'] === $job['id']);
-    $jobs->process($job['id']);
+    $jobs->sweep();
     $done = $jobs->get($job['id']);
     assert($done['status'] === 'done' && $done['total'] === 3 && $done['done'] === 3);
     assert(array_column($done['results'], 'result') === ['created', 'created', 'invalid']);
@@ -237,13 +235,13 @@ try {
         $in->put('companies', 'test-C1', ['name' => 'Test Company One', 'updated_at' => $t1], 'test-run', 'api');
         $in->put('companies', 'test-C2', ['name' => 'Test Company Two', 'updated_at' => $t1], 'test-run', 'api');
         $ours = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 2;
-        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'data' => ['name' => 'Test Company One', 'updated_at' => $t2]]], 'test-run', 'api');
+        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]], 'test-run', 'api');
         assert(array_column($results, 'result') === ['unchanged', 'deleted']);
         assert($in->postId('companies', 'test-C1') > 0 && $in->postId('companies', 'test-C2') === 0);
         assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 1 === (int) $ours); // ours untouched
 
         // A snapshot with unusable ids (numbers here) deletes nothing.
-        $results = $jobs->applySnapshot('companies', [['id' => 7, 'data' => ['id' => 7, 'name' => 'Test Seven', 'updated_at' => $t2]]], 'test-run', 'api');
+        $results = $jobs->applySnapshot('companies', [['id' => 7, 'name' => 'Test Seven', 'updated_at' => $t2]], 'test-run', 'api');
         assert($in->postId('companies', 'test-C1') > 0 && !in_array('deleted', array_column($results, 'result'), true));
         assert(end($results)['result'] === 'error');
 
@@ -251,7 +249,7 @@ try {
         for ($i = 2; $i <= 13; $i++) {
             $in->put('companies', "test-C$i", ['name' => "Test Company $i", 'updated_at' => $t1], 'test-run', 'api');
         }
-        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'data' => ['name' => 'Test Company One', 'updated_at' => $t2]]], 'test-run', 'api');
+        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]], 'test-run', 'api');
         assert($in->postId('companies', 'test-C13') > 0 && end($results)['result'] === 'error');
     } else {
         echo "Skipped the snapshot deletion check: this site has companies with Data Hub IDs.\n";

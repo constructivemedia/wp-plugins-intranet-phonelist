@@ -88,7 +88,7 @@ final class Adapter
             $counts = [];
             foreach (['divisions' => $divisions, 'staff' => $staff] as $type => $records) {
                 $progress(sprintf('Importing %d %s…', count($records), $type));
-                $results = $this->jobs->applySnapshot($type, array_map(fn (array $record): array => ['id' => $record['id'], 'data' => $record], $records), $runId, $trigger);
+                $results = $this->jobs->applySnapshot($type, $records, $runId, $trigger);
                 $counts[$type] = array_count_values(array_column($results, 'result'));
             }
         } finally {

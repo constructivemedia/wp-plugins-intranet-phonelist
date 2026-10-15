@@ -19,8 +19,8 @@ final class Schema
     /** Never exposed to unsigned reads or written to the log. */
     public const PRIVATE = ['date_of_birth', 'home_phone'];
 
-    /** What happens to a staff member with each status; any status not listed is deleted. */
-    public const STATUS_ACTION = ['active' => 'keep'];
+    /** Staff with these statuses stay on the phone list; any other status deletes them. */
+    public const KEPT_STATUSES = ['active'];
 
     private const ID_LENGTH = 64;
     private const STRING_LENGTH = 1000;
@@ -156,7 +156,7 @@ final class Schema
      */
     public static function keeps(?string $status): bool
     {
-        return (self::STATUS_ACTION[$status ?? ''] ?? 'delete') === 'keep';
+        return in_array($status, self::KEPT_STATUSES, true);
     }
 
     /**

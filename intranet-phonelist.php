@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: Intranet Phonelist
- * Description: Syncs staff and divisions from Oracle into WordPress.
+ * Description: JWH's companies, divisions and staff for the intranet phone list, pushed in by Data Hub.
  * Version:     2.0.0
  * Author:      Constructive Media
  * Requires PHP: 8.1

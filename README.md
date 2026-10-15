@@ -35,7 +35,7 @@ Everything goes through one place, `Ingest\Ingestor`, whether it comes from a si
 
 - **Identity:** records are matched only by their Data Hub `id`, stored in `_iphl_source_id`.
 - **Order:** every record carries `updated_at`. Older than what's stored is refused (`409`); identical data is `unchanged`.
-- **Status:** `active` staff are kept. Any other status deletes the person (`Schema::STATUS_ACTION`, one line to change).
+- **Status:** `active` staff are kept. Any other status deletes the person (`Schema::KEPT_STATUSES`, one line to change).
 - **Locked fields:** pushed fields can't be changed in the editor. Hand-set fields stay editable: a division's **Company**, and a staff member's **JWH Club**.
 - **Batches and snapshots** go into a queue table (`wp_iphl_jobs`):
   - The request gets `202` straight away, and the job is processed after the response is sent.
@@ -160,8 +160,8 @@ Everything is under `/wp-json/phonelist/v2/`:
 | | |
 |---|---|
 | `GET /club` | `Phonelist::club()` as a list in page order: `[{"level": "lifetime-club", "title": …, "description": …, "logo": …, "members": [...]}, …]` |
-| `GET /staff?name=&division_id=&department_code=` | Staff records as Data Hub sends them, sorted by name |
-| `GET /{companies\|divisions\|staff}/{id}` | One record |
+| `GET /{companies\|divisions\|staff}` | Every record WordPress holds, in Data Hub's shape, sorted by name (`id` is null for records WordPress made, such as a company created for a new division). Staff can be filtered: `?name=&division_id=&department_code=` |
+| `GET /{companies\|divisions\|staff}/{id}` | One record, by Data Hub ID |
 | `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress (signed), see [`docs/integration-guide.md`](docs/integration-guide.md) |
 
 **Who can read:**

@@ -44,12 +44,20 @@ final class Phonelist
      */
     public static function matches(Staff $person, ?string $name = null, ?string $division = null, ?string $department = null): bool
     {
-        $name = trim($name ?? '');
-
-        // Any word of the full name starts with $name: 'jan', 'cit', 'jane cit', 'lima' (Santos Lima), 'jones' (Smith-Jones).
-        return ($name === '' || preg_match('/(^|[\s\-])' . preg_quote($name, '/') . '/iu', $person->name))
+        return self::nameMatches($person->name, $name)
             && (($division ?? '') === '' || $person->divisionId === $division)
             && (($department ?? '') === '' || $person->departmentCode === $department);
+    }
+
+    /**
+     * Any word of $name starts with $search (case-insensitive): 'jan', 'cit', 'jane cit', 'lima' (Santos Lima),
+     * 'jones' (Smith-Jones). An empty search matches everyone.
+     */
+    public static function nameMatches(string $name, ?string $search): bool
+    {
+        $search = trim($search ?? '');
+
+        return $search === '' || preg_match('/(^|[\s\-])' . preg_quote($search, '/') . '/iu', $name) === 1;
     }
 
     /**

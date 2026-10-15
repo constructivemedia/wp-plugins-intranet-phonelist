@@ -13,13 +13,14 @@ use wpdb;
  * The queue for batches and snapshots, in its own table. A job is stored, answered with 202, then processed after the
  * response is sent; a cron sweep every minute picks up anything left queued or abandoned.
  *
- * Safe to re-run: every item is an upsert or delete guarded by updated_at, so a job interrupted part way is simply
- * run again from the start. One job runs at a time, oldest first: a sweep that finds another job running leaves it be.
+ * A job is a list of operations ({op, type, id, data}); a snapshot is stored as one put per record. Safe to re-run:
+ * every operation is guarded by updated_at, so a job interrupted part way is simply run again from the start.
+ * One job runs at a time, oldest first: a sweep that finds another job running leaves it be.
  */
 final class Jobs
 {
-    public const SWEEP_HOOK = 'iphl_jobs_sweep';
-    public const MINUTE_SCHEDULE = 'iphl_minute';
+    private const SWEEP_HOOK = 'iphl_jobs_sweep';
+    private const MINUTE_SCHEDULE = 'iphl_minute';
 
     /** A running job with no heartbeat for this long is taken to be dead and picked up again. */
     private const STALE_SECONDS = 300;
@@ -88,21 +89,20 @@ final class Jobs
     }
 
     /**
-     * Queue a job. With an idempotency key already used, the existing job is returned instead.
+     * Queue a batch (operations) or a snapshot (every record of $type). With an idempotency key already used, the
+     * existing job is returned instead. Throws if the job can't be stored.
      *
-     * @param string $kind 'batch' (items: {op, type, id, data}) or 'snapshot' (items: {id, data}, all of $type).
      * @return array{id: string, status: string, existing: bool}
      */
     public function create(string $kind, ?string $type, array $items, ?string $idempotencyKey, string $trigger): array
     {
-        if ($idempotencyKey !== null) {
-            $existing = $this->db->get_row($this->db->prepare("SELECT id, status FROM {$this->table} WHERE idempotency_key = %s", $idempotencyKey));
-            if ($existing) {
-                return ['id' => $existing->id, 'status' => $existing->status, 'existing' => true];
-            }
+        $existing = fn () => $idempotencyKey === null ? null : $this->db->get_row($this->db->prepare("SELECT id, status FROM {$this->table} WHERE idempotency_key = %s", $idempotencyKey));
+        if ($job = $existing()) {
+            return ['id' => $job->id, 'status' => $job->status, 'existing' => true];
         }
 
         $id = wp_generate_uuid4();
+        $operations = $kind === 'snapshot' ? self::puts((string) $type, $items) : array_values($items);
         $stored = $this->db->insert($this->table, [
             'id' => $id,
             'idempotency_key' => $idempotencyKey,
@@ -110,17 +110,14 @@ final class Jobs
             'type' => $type,
             'status' => 'queued',
             'triggered_by' => $trigger,
-            'payload' => wp_json_encode(array_values($items)),
-            'results' => '[]',
-            'total' => count($items),
+            'payload' => wp_json_encode($operations),
+            'total' => count($operations),
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
-
         if (!$stored) {
             // The same idempotency key arriving twice at once: the other request stored it.
-            $existing = $idempotencyKey === null ? null : $this->db->get_row($this->db->prepare("SELECT id, status FROM {$this->table} WHERE idempotency_key = %s", $idempotencyKey));
-            if ($existing) {
-                return ['id' => $existing->id, 'status' => $existing->status, 'existing' => true];
+            if ($job = $existing()) {
+                return ['id' => $job->id, 'status' => $job->status, 'existing' => true];
             }
             throw new RuntimeException('The job could not be stored: ' . ($this->db->last_error ?: 'unknown database error'));
         }
@@ -129,7 +126,7 @@ final class Jobs
     }
 
     /**
-     * @return array{id: string, kind: string, type: ?string, status: string, total: int, done: int, results: array, error: ?string, created_at: string, finished_at: ?string}|null
+     * @return array{id: string, kind: string, type: ?string, status: string, triggered_by: string, total: int, done: int, results: array, error: ?string, created_at: string, finished_at: ?string}|null
      */
     public function get(string $id): ?array
     {
@@ -139,7 +136,7 @@ final class Jobs
     }
 
     /**
-     * @return array<array> The most recent jobs, newest first (without their payloads).
+     * @return array<array> The most recent jobs, newest first.
      */
     public function recent(int $limit = 50): array
     {
@@ -148,17 +145,7 @@ final class Jobs
             $limit
         ));
 
-        return array_map(fn (object $row): array => $this->describe($row) + ['triggered_by' => $row->triggered_by], $rows);
-    }
-
-    /**
-     * Run one job, if it's waiting (or abandoned) and no other job is running.
-     */
-    public function process(string $id): void
-    {
-        if (!$this->busy()) {
-            $this->run($id);
-        }
+        return array_map($this->describe(...), $rows);
     }
 
     /**
@@ -179,18 +166,7 @@ final class Jobs
     }
 
     /**
-     * Whether another job is running (and still alive).
-     */
-    private function busy(): bool
-    {
-        return (bool) $this->db->get_var($this->db->prepare(
-            "SELECT 1 FROM {$this->table} WHERE status = 'running' AND heartbeat >= %s LIMIT 1",
-            gmdate('Y-m-d H:i:s', time() - self::STALE_SECONDS)
-        ));
-    }
-
-    /**
-     * After the current response has been sent, work through the queue (this job included, in order).
+     * After the current response has been sent, work through the queue (the new job included, in order).
      */
     public function runAfterResponse(): void
     {
@@ -205,26 +181,51 @@ final class Jobs
     }
 
     /**
-     * A snapshot without the queue (the Oracle import uses this): every item is put, then records of $type with a
+     * A snapshot without the queue (the Oracle import uses this): every record is put, then records of $type with a
      * Data Hub ID that aren't in the snapshot are deleted, then every staff link is rechecked.
      *
-     * @return array<array> A result per item, then one per deleted record.
+     * @return array<array> A result per record, then one per deleted record.
      */
-    public function applySnapshot(string $type, array $items, string $runId, string $trigger): array
+    public function applySnapshot(string $type, array $records, string $runId, string $trigger): array
     {
-        $results = array_map(fn (array $item): array => $this->item('snapshot', $type, $item, $runId, $trigger), $items);
+        $operations = self::puts($type, $records);
+        $results = array_map(fn (array $operation): array => $this->apply($operation, $runId, $trigger), $operations);
 
-        return [...$results, ...$this->finishSnapshot($type, $items, $runId, $trigger)];
+        return [...$results, ...$this->finishSnapshot($type, $operations, $runId, $trigger)];
     }
 
     /**
-     * Delete finished jobs older than KEEP_DAYS. Returns jobs deleted.
+     * Delete finished jobs older than KEEP_DAYS. Run daily. Returns jobs deleted.
      */
     public function prune(): int
     {
         return (int) $this->db->query($this->db->prepare(
             "DELETE FROM {$this->table} WHERE status IN ('done', 'failed') AND finished_at < %s",
             gmdate('Y-m-d H:i:s', time() - self::KEEP_DAYS * DAY_IN_SECONDS)
+        ));
+    }
+
+    /**
+     * A snapshot's records as put operations.
+     */
+    private static function puts(string $type, array $records): array
+    {
+        return array_map(fn ($record): array => [
+            'op' => 'put',
+            'type' => $type,
+            'id' => is_array($record) ? ($record['id'] ?? null) : null,
+            'data' => is_array($record) ? $record : [],
+        ], array_values($records));
+    }
+
+    /**
+     * Whether another job is running (and still alive).
+     */
+    private function busy(): bool
+    {
+        return (bool) $this->db->get_var($this->db->prepare(
+            "SELECT 1 FROM {$this->table} WHERE status = 'running' AND heartbeat >= %s LIMIT 1",
+            gmdate('Y-m-d H:i:s', time() - self::STALE_SECONDS)
         ));
     }
 
@@ -245,76 +246,69 @@ final class Jobs
         }
 
         $job = $this->db->get_row($this->db->prepare("SELECT * FROM {$this->table} WHERE id = %s", $id));
-        $items = json_decode($job->payload, true) ?: [];
-        $results = [];
-        $trigger = $job->triggered_by;
-
         if ((int) $job->attempts > self::MAX_ATTEMPTS) {
-            $this->finish($id, 'failed', $results, 'Gave up after ' . self::MAX_ATTEMPTS . ' attempts.');
+            $this->finish($job, 'failed', [], 'Gave up after ' . self::MAX_ATTEMPTS . ' attempts.');
             return true;
         }
-        $this->log->write($id, $trigger, 'info', 'job_start', $job->type ? (Schema::TYPES[$job->type] ?? null) : null, null, $job->kind, null, ['items' => (int) $job->total, 'attempt' => (int) $job->attempts]);
+        $operations = json_decode($job->payload, true) ?: [];
+        $this->log->write($id, $job->triggered_by, 'info', 'job_start', $job->type ? (Schema::TYPES[$job->type] ?? null) : null, null, $job->kind, null, ['items' => (int) $job->total, 'attempt' => (int) $job->attempts]);
 
         try {
-            foreach ($items as $i => $item) {
-                $results[] = $this->item($job->kind, $job->type, $item, $id, $trigger);
+            $results = [];
+            foreach ($operations as $i => $operation) {
+                $results[] = $this->apply($operation, $id, $job->triggered_by);
                 // Progress for the Jobs tab, and a sign of life; the results are saved once, at the end.
                 $this->db->update($this->table, ['cursor_at' => $i + 1, 'heartbeat' => gmdate('Y-m-d H:i:s')], ['id' => $id]);
             }
             if ($job->kind === 'snapshot') {
-                $results = [...$results, ...$this->finishSnapshot($job->type, $items, $id, $trigger)];
+                $results = [...$results, ...$this->finishSnapshot($job->type, $operations, $id, $job->triggered_by)];
             }
-            $this->finish($id, 'done', $results);
+            $this->finish($job, 'done', $results);
         } catch (Throwable $e) {
             $this->db->update($this->table, ['status' => (int) $job->attempts >= self::MAX_ATTEMPTS ? 'failed' : 'queued', 'error' => $e->getMessage()], ['id' => $id]);
-            $this->log->write($id, $trigger, 'error', 'job_error', null, null, $job->kind, $e->getMessage());
+            $this->log->write($id, $job->triggered_by, 'error', 'job_error', null, null, $job->kind, $e->getMessage());
         }
 
         return true;
     }
 
-    private function finish(string $id, string $status, array $results, ?string $error = null): void
+    private function finish(object $job, string $status, array $results, ?string $error = null): void
     {
-        $this->db->update($this->table, ['status' => $status, 'results' => wp_json_encode(array_values($results)), 'error' => $error, 'finished_at' => gmdate('Y-m-d H:i:s')], ['id' => $id]);
-        $job = $this->db->get_row($this->db->prepare("SELECT kind, triggered_by FROM {$this->table} WHERE id = %s", $id));
-        $this->log->write($id, $job->triggered_by, $status === 'done' ? 'info' : 'error', 'job_end', null, null, $job->kind, $error, [
+        $this->db->update($this->table, ['status' => $status, 'results' => wp_json_encode($results), 'error' => $error, 'finished_at' => gmdate('Y-m-d H:i:s')], ['id' => $job->id]);
+        $this->log->write($job->id, $job->triggered_by, $status === 'done' ? 'info' : 'error', 'job_end', null, null, $job->kind, $error, [
             'status' => $status,
             'results' => array_count_values(array_column($results, 'result')),
         ]);
     }
 
     /**
-     * One item through the Ingestor, as a result row: {id, type, op, result, errors?, message?}.
+     * One operation through the Ingestor, as a result row: {id, type, op, result, errors?, warnings?, message?}.
      */
-    private function item(string $kind, ?string $type, mixed $item, string $runId, string $trigger): array
+    private function apply(mixed $operation, string $runId, string $trigger): array
     {
-        $item = is_array($item) ? $item : [];
-        if ($kind === 'snapshot') {
-            $item = ['op' => 'put', 'type' => $type, 'id' => $item['id'] ?? null, 'data' => $item['data'] ?? []];
-        }
-        $outcome = $this->ingestor->apply($item, $runId, $trigger);
+        $operation = is_array($operation) ? $operation : [];
 
-        return ['id' => is_string($item['id'] ?? null) ? $item['id'] : null, 'type' => $item['type'] ?? null, 'op' => $item['op'] ?? null] + $outcome->toArray();
+        return [
+            'id' => is_string($operation['id'] ?? null) ? $operation['id'] : null,
+            'type' => $operation['type'] ?? null,
+            'op' => $operation['op'] ?? null,
+        ] + $this->ingestor->apply($operation, $runId, $trigger)->toArray();
     }
 
     /**
-     * After a snapshot's items: delete records of $type with a Data Hub ID the snapshot didn't list, as of its newest
+     * After a snapshot's puts: delete records of $type with a Data Hub ID the snapshot didn't list, as of its newest
      * updated_at (so a record changed since is kept), then recheck every staff link.
      *
-     * Nothing is deleted when any item lacks a usable id, or when the deletions would exceed MAX_SNAPSHOT_DELETIONS
+     * Nothing is deleted when any record lacks a usable id, or when the deletions would exceed MAX_SNAPSHOT_DELETIONS
      * and MAX_SNAPSHOT_DELETE_SHARE of the records held: a malformed or truncated snapshot can't empty the phone list.
      */
-    private function finishSnapshot(string $type, array $items, string $runId, string $trigger): array
+    private function finishSnapshot(string $type, array $operations, string $runId, string $trigger): array
     {
-        $ids = array_map(fn ($item): ?string => is_string($item['id'] ?? null) && $item['id'] !== '' ? $item['id'] : null, $items);
+        $ids = array_map(fn (array $operation): ?string => is_string($operation['id']) && $operation['id'] !== '' ? $operation['id'] : null, $operations);
         $listed = array_flip(array_filter($ids));
-        $times = array_filter(array_map(fn ($item) => Schema::updatedAt(is_array($item['data'] ?? null) ? $item['data'] : []), $items));
+        $times = array_filter(array_map(fn (array $operation) => Schema::updatedAt($operation['data']), $operations));
         $newest = $times ? max($times)->format(DATE_RFC3339) : null;
-        $held = $this->db->get_col($this->db->prepare(
-            "SELECT m.meta_value FROM {$this->db->posts} p JOIN {$this->db->postmeta} m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s",
-            Schema::TYPES[$type],
-            PostTypes::SOURCE_ID
-        ));
+        $held = PostTypes::sourceIds(Schema::TYPES[$type]);
         $missing = array_values(array_filter($held, fn (string $id): bool => !isset($listed[$id])));
 
         $refused = match (true) {
@@ -333,7 +327,7 @@ final class Jobs
             }
         } else {
             foreach ($missing as $id) {
-                $results[] = ['id' => $id, 'type' => $type, 'op' => 'delete'] + $this->ingestor->delete($type, $id, $newest, $runId, $trigger)->toArray();
+                $results[] = $this->apply(['op' => 'delete', 'type' => $type, 'id' => $id, 'data' => ['updated_at' => $newest]], $runId, $trigger);
             }
         }
         $this->relations->relinkAll();
@@ -348,6 +342,7 @@ final class Jobs
             'kind' => $row->kind,
             'type' => $row->type,
             'status' => $row->status,
+            'triggered_by' => $row->triggered_by,
             'total' => (int) $row->total,
             'done' => (int) $row->cursor_at,
             'results' => json_decode((string) $row->results, true) ?: [],
