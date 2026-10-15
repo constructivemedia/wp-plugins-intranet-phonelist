@@ -179,16 +179,45 @@ try {
     rmdir($folder);
 
     // Theme API reads the v2 fields: search, birthdays (hidden ones left out), on leave.
+    $day = fn (string $modify): string => (new DateTimeImmutable('today', wp_timezone()))->modify($modify)->format('Y-m-d');
     $in->put('staff', 'test-t1', ['first_name' => 'Zelda', 'last_name' => 'Testerson', 'department_code' => 'T9', 'phone' => '0894647800', 'extension' => '1234',
-        'date_of_birth' => (new DateTimeImmutable('tomorrow', wp_timezone()))->modify('-30 years')->format('Y-m-d'), 'on_leave_until' => '2026-12-01'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+        'date_of_birth' => (new DateTimeImmutable('tomorrow', wp_timezone()))->modify('-30 years')->format('Y-m-d'), 'on_leave_until' => $day('+20 days')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     $in->put('staff', 'test-t2', ['first_name' => 'Zora', 'last_name' => 'Testerson', 'hide_birthday' => true,
         'date_of_birth' => (new DateTimeImmutable('tomorrow', wp_timezone()))->modify('-30 years')->format('Y-m-d')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     $found = Phonelist::staff(name: 'zelda test');
     assert(count($found) === 1 && $found[0]->departmentCode === 'T9' && $found[0]->phone === '+61894647800' && $found[0]->extension === '1234' && $found[0]->id === 'test-t1');
-    assert($found[0]->onLeaveUntil?->format('Y-m-d') === '2026-12-01');
+    assert($found[0]->onLeaveUntil?->format('Y-m-d') === $day('+20 days'));
     assert(count(Phonelist::staff(name: 'Testerson', department: 'T9')) === 1);
     $birthdays = array_map(fn ($person) => $person->id, Phonelist::birthdays(1));
     assert(in_array('test-t1', $birthdays, true) && !in_array('test-t2', $birthdays, true));
+
+    // On leave: those with a return date still ahead, soonest back first.
+    $in->put('staff', 'test-t3', ['first_name' => 'Zack', 'last_name' => 'Testerson', 'on_leave_until' => $day('+2 days')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-t4', ['first_name' => 'Zeb', 'last_name' => 'Testerson', 'on_leave_until' => $day('-2 days')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $away = array_values(array_filter(array_map(fn ($person) => $person->id, Phonelist::onLeave()), fn (string $id): bool => str_starts_with($id, 'test-t')));
+    assert($away === ['test-t3', 'test-t1']);
+
+    // Work anniversaries: whole years only, soonest first; nobody's first day counts.
+    $in->put('staff', 'test-a1', ['first_name' => 'Ann', 'last_name' => 'Testerson', 'start_date' => (new DateTimeImmutable('tomorrow', wp_timezone()))->modify('-5 years')->format('Y-m-d')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-a2', ['first_name' => 'New', 'last_name' => 'Testerson', 'start_date' => $day('+1 day')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $anniversaries = array_filter(Phonelist::anniversaries(1), fn ($person) => str_starts_with($person->id, 'test-a'));
+    assert(count($anniversaries) === 1 && current($anniversaries)->id === 'test-a1' && current($anniversaries)->years === 5 && current($anniversaries)->daysUntil === 1);
+
+    // Org chart: a manager's team and a person's manager, from reports_to.
+    $in->put('staff', 'test-o1', ['first_name' => 'Boss', 'last_name' => 'Testerson'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-o2', ['first_name' => 'Ava', 'last_name' => 'Testerson', 'reports_to' => 'test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-o3', ['first_name' => 'Ben', 'last_name' => 'Testerson', 'reports_to' => 'test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    assert(array_map(fn ($person) => $person->id, Phonelist::team('test-o1')) === ['test-o2', 'test-o3']);
+    assert(Phonelist::manager('test-o2')?->id === 'test-o1' && Phonelist::manager('test-o1') === null && Phonelist::team('test-nobody') === []);
+    assert(Phonelist::staff(name: 'Ava Testerson')[0]->reportsTo === 'test-o1');
+
+    // Divisions and companies, with their staff.
+    $in->put('divisions', 'test-LD', ['name' => 'Test Listing Division', 'updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-l1', ['first_name' => 'Lia', 'last_name' => 'Testerson', 'division_id' => 'test-LD'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $division = current(array_filter(Phonelist::divisions(), fn (array $division): bool => $division['id'] === 'test-LD'));
+    assert($division['name'] === 'Test Listing Division' && $division['company'] === 'Test Listing Division' && array_map(fn ($person) => $person->id, $division['staff']) === ['test-l1']);
+    $company = current(array_filter(Phonelist::companies(), fn (array $company): bool => $company['name'] === 'Test Listing Division'));
+    assert(array_column($company['divisions'], 'id') === ['test-LD'] && $company['staff'][0]->id === 'test-l1');
 
     // Upgrade from v1: meta renamed in place (with ACF references), the position-based manager link becomes reports_to, idempotent.
     $v1 = fn (string $title, array $meta): int => wp_insert_post(['post_type' => PostTypes::STAFF, 'post_status' => 'publish', 'post_title' => $title, 'meta_input' => $meta]);

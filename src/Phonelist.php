@@ -115,33 +115,124 @@ final class Phonelist
         $birthdays = [];
 
         foreach (self::staffPosts() as $post) {
-            if (get_post_meta($post->ID, 'hide_birthday', true) === '1') {
-                continue;
-            }
-            $next = self::nextBirthday((string) get_post_meta($post->ID, 'date_of_birth', true), $today);
-            if (!$next) {
-                continue;
-            }
-            $daysUntil = $today->diff($next)->days;
-            if ($daysUntil <= $days) {
-                $birthdays[] = self::toStaff($post, $next, $daysUntil);
+            $next = get_post_meta($post->ID, 'hide_birthday', true) === '1' ? null : self::nextOccurrence((string) get_post_meta($post->ID, 'date_of_birth', true), $today);
+            if ($next && $today->diff($next)->days <= $days) {
+                $birthdays[] = self::toStaff($post, birthday: $next, daysUntil: $today->diff($next)->days);
             }
         }
 
-        usort($birthdays, fn (Staff $a, Staff $b): int => [$a->daysUntil, $a->name] <=> [$b->daysUntil, $b->name]);
-
-        return $birthdays;
+        return self::soonestFirst($birthdays);
     }
 
     /**
-     * Next occurrence (today or later) of a stored DOB (ACF Ymd, e.g. '19850905'), or null if empty.
-     * Year of birth is ignored; 29 Feb falls on 28 Feb in non-leap years.
+     * Staff whose next work anniversary (a whole year or more since start_date) is within $days days, soonest first.
+     *
+     * @return Staff[] With anniversary, years and daysUntil set.
+     */
+    public static function anniversaries(int $days = 7): array
+    {
+        $today = new DateTimeImmutable('today', wp_timezone());
+        $anniversaries = [];
+
+        foreach (self::staffPosts() as $post) {
+            $start = (string) get_post_meta($post->ID, 'start_date', true);
+            $next = self::nextOccurrence($start, $today);
+            $years = $next ? (int) $next->format('Y') - (int) substr($start, 0, 4) : 0;
+            if ($years >= 1 && $today->diff($next)->days <= $days) {
+                $anniversaries[] = self::toStaff($post, daysUntil: $today->diff($next)->days, anniversary: $next, years: $years);
+            }
+        }
+
+        return self::soonestFirst($anniversaries);
+    }
+
+    /**
+     * Staff on leave (their return date is still ahead), soonest back first.
+     *
+     * @return Staff[]
+     */
+    public static function onLeave(): array
+    {
+        $away = array_values(array_filter(self::staff(), fn (Staff $person): bool => $person->onLeaveUntil !== null));
+        usort($away, fn (Staff $a, Staff $b): int => [$a->onLeaveUntil, $a->name] <=> [$b->onLeaveUntil, $b->name]);
+
+        return $away;
+    }
+
+    /**
+     * The people who report to a staff member (by Data Hub id), sorted by name.
+     *
+     * @return Staff[]
+     */
+    public static function team(string $id): array
+    {
+        return array_values(array_filter(self::staff(), fn (Staff $person): bool => $person->reportsTo === $id));
+    }
+
+    /**
+     * A staff member's manager (by Data Hub id), or null.
+     */
+    public static function manager(string $id): ?Staff
+    {
+        $byId = array_column(self::staff(), null, 'id');
+
+        return $byId[$byId[$id]->reportsTo ?? ''] ?? null;
+    }
+
+    /**
+     * Every division, sorted by name: ['id' (Data Hub id, or null), 'name', 'company', 'staff' => Staff[]].
+     */
+    public static function divisions(): array
+    {
+        $staff = [];
+        foreach (self::staff() as $person) {
+            $staff[$person->divisionId][] = $person;
+        }
+
+        return array_map(function (WP_Post $post) use ($staff): array {
+            $id = (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true);
+            $company = (int) get_post_meta($post->ID, 'company', true);
+
+            return ['id' => $id ?: null, 'name' => $post->post_title, 'company' => $company ? get_post_field('post_title', $company, 'raw') : '', 'staff' => $staff[$id] ?? []];
+        }, get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
+    }
+
+    /**
+     * Every company, sorted by name: ['name', 'divisions' => (as divisions()), 'staff' => Staff[] across them, by name].
+     */
+    public static function companies(): array
+    {
+        $divisions = self::divisions();
+
+        return array_map(function (WP_Post $post) use ($divisions): array {
+            $theirs = array_values(array_filter($divisions, fn (array $division): bool => $division['company'] === $post->post_title));
+            $staff = array_merge(...array_column($theirs, 'staff'));
+            usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
+
+            return ['name' => $post->post_title, 'divisions' => $theirs, 'staff' => $staff];
+        }, get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
+    }
+
+    /**
+     * @param Staff[] $staff
+     * @return Staff[] Sorted by daysUntil, then name.
+     */
+    private static function soonestFirst(array $staff): array
+    {
+        usort($staff, fn (Staff $a, Staff $b): int => [$a->daysUntil, $a->name] <=> [$b->daysUntil, $b->name]);
+
+        return $staff;
+    }
+
+    /**
+     * Next yearly occurrence (today or later) of a stored date (ACF Ymd, e.g. '19850905'), or null if empty.
+     * The year is ignored; 29 Feb falls on 28 Feb in non-leap years. For birthdays and work anniversaries.
      *
      * @internal Public for tests/plan-check.php.
      */
-    public static function nextBirthday(string $dob, DateTimeImmutable $today): ?DateTimeImmutable
+    public static function nextOccurrence(string $ymd, DateTimeImmutable $today): ?DateTimeImmutable
     {
-        $date = DateTimeImmutable::createFromFormat('!Ymd', $dob);
+        $date = DateTimeImmutable::createFromFormat('!Ymd', $ymd);
         if (!$date) {
             return null;
         }
@@ -165,7 +256,7 @@ final class Phonelist
         return $query->posts;
     }
 
-    private static function toStaff(WP_Post $post, ?DateTimeImmutable $birthday = null, ?int $daysUntil = null): Staff
+    private static function toStaff(WP_Post $post, ?DateTimeImmutable $birthday = null, ?int $daysUntil = null, ?DateTimeImmutable $anniversary = null, ?int $years = null): Staff
     {
         $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
         $title = fn (string $link): string => (int) $meta($link) ? get_post_field('post_title', (int) $meta($link), 'raw') : '';
@@ -189,9 +280,12 @@ final class Phonelist
             company: $title('company'),
             departmentCode: $meta('department_code'),
             department: $meta('department'),
+            reportsTo: $meta('reports_to'),
             onLeaveUntil: $leave && $leave >= new DateTimeImmutable('today', wp_timezone()) ? $leave : null,
             birthday: $birthday,
             daysUntil: $daysUntil,
+            anniversary: $anniversary,
+            years: $years,
             photoId: $photoId ?: null,
             photoUrl: $photoId ? (wp_get_attachment_image_url($photoId, 'full') ?: null) : null,
             club: is_array($club) ? $club[0]->slug : null,

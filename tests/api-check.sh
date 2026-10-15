@@ -86,6 +86,9 @@ expect "GET signed" 200 "$(request GET /staff/test-api-1 '' signed)"
 has "private fields shown to signed requests" '"date_of_birth":"1985-09-05"'
 expect "GET list filtered by name" 200 "$(request GET '/staff?name=jane%20ap' '' app)"
 has "list finds the record" '"id":"test-api-1"'
+expect "a manager's team" 200 "$(request GET /staff/test-api-1/team '' app)"
+has "team is a list" '^\['
+expect "team of an unknown person" 404 "$(request GET /staff/test-api-nope/team '' app)"
 expect "empty snapshot is refused" 422 "$(request PUT /staff '{"records":[]}' signed)"
 expect "batch is accepted" 202 "$(request POST /batch "{\"operations\":[{\"op\":\"put\",\"type\":\"divisions\",\"id\":\"test-api-D\",\"data\":{\"name\":\"Test Api Division\",\"updated_at\":\"$T1\"}},{\"op\":\"patch\",\"type\":\"staff\",\"id\":\"test-api-1\",\"data\":{\"division_id\":\"test-api-D\",\"updated_at\":\"$T2\"}}]}" signed -H "Idempotency-Key: $KEY")"
 JOB=$(grep -o '"job":"[^"]*"' <<<"$LAST_BODY" | cut -d'"' -f4)

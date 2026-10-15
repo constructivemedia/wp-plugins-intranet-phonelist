@@ -46,7 +46,7 @@ assert(Photos::fileKey('Jane Citizen_WACB.jpg') === 'jane_citizen_wacb');
 assert(Photos::fileKey('notes.txt') === null && Photos::fileKey('.jpg') === null);
 
 // Next birthday from stored Ymd: year of birth ignored, wraps into next year, 29 Feb → 28 Feb in non-leap years.
-$next = fn ($dob, $today) => Phonelist::nextBirthday($dob, new DateTimeImmutable($today))?->format('Y-m-d');
+$next = fn ($dob, $today) => Phonelist::nextOccurrence($dob, new DateTimeImmutable($today))?->format('Y-m-d');
 assert($next('19851013', '2026-10-13') === '2026-10-13'); // today
 assert($next('19851014', '2026-10-13') === '2026-10-14');
 assert($next('19851012', '2026-10-13') === '2027-10-12'); // passed → next year

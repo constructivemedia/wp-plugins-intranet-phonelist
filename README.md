@@ -104,6 +104,13 @@ foreach (Phonelist::birthdays(days: 3) as $person) {
 // Staff search: every filter is optional and they combine with AND.
 Phonelist::staff(name: 'jul');                         // any word of the name starts with 'jul'
 Phonelist::staff(division: 'JWH', department: '20');   // exact division ID and department code
+
+Phonelist::anniversaries(days: 7);   // work anniversaries (whole years since start_date): ->anniversary, ->years, ->daysUntil
+Phonelist::onLeave();                // on leave now, soonest back first: ->onLeaveUntil
+Phonelist::team('10007');            // who reports to staff 10007 (by Data Hub id), by name
+Phonelist::manager('10423');         // their manager, or null
+Phonelist::divisions();              // [['id', 'name', 'company', 'staff' => Staff[]], …] by name
+Phonelist::companies();              // [['name', 'divisions' => [...], 'staff' => Staff[]], …] by name
 ```
 
 ### JWH Club
@@ -142,12 +149,12 @@ add_filter('intranet_phonelist_club', function (array $club): array {
 - `id` (the Data Hub ID), `postId`
 - `name`, `firstName`, `lastName`
 - `position`, `email`, `mobile`, `phone` (direct), `extension` (VoIP)
-- `divisionId`, `division`, `company`
+- `divisionId`, `division`, `company`, `reportsTo` (their manager's staff id)
 - `departmentCode`, `department`
 - `onLeaveUntil` (a date, or null when not on leave)
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
 - `club` (the level's slug: `'lifetime-club'`, `'40-year-club'` …, or null)
-- `birthday`, `daysUntil` (from `birthdays()` only)
+- `birthday`, `daysUntil` (from `birthdays()`); `anniversary`, `years`, `daysUntil` (from `anniversaries()`)
 
 Date of birth, home phone and other HR fields are never exposed.
 
@@ -162,6 +169,7 @@ Everything is under `/wp-json/phonelist/v2/`:
 | `GET /club` | `Phonelist::club()` as a list in page order: `[{"level": "lifetime-club", "title": …, "description": …, "logo": …, "members": [...]}, …]` |
 | `GET /{companies\|divisions\|staff}` | Every record WordPress holds, in Data Hub's shape, sorted by name (`id` is null for records WordPress made, such as a company created for a new division). Staff can be filtered: `?name=&division_id=&department_code=` |
 | `GET /{companies\|divisions\|staff}/{id}` | One record, by Data Hub ID |
+| `GET /staff/{id}/team` | The people who report to that staff member, as records sorted by name |
 | `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress (signed), see [`docs/integration-guide.md`](docs/integration-guide.md) |
 
 **Who can read:**

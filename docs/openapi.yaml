@@ -198,6 +198,26 @@ paths:
                     - $ref: '#/components/schemas/Staff'
         '401': { $ref: '#/components/responses/Problem' }
 
+  /staff/{id}/team:
+    get:
+      operationId: getTeam
+      summary: The people who report to a staff member (their reports_to is this id), sorted by name
+      security:
+        - PhonelistSignature: []
+        - WordPressUser: []
+      parameters:
+        - $ref: '#/components/parameters/Id'
+      responses:
+        '200':
+          description: Staff records.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Staff' }
+        '401': { $ref: '#/components/responses/Problem' }
+        '404': { $ref: '#/components/responses/Problem' }
+
   /batch:
     post:
       operationId: postBatch

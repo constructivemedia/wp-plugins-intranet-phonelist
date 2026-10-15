@@ -42,6 +42,9 @@ final class ReadController
                     ],
                 ],
             ]);
+            register_rest_route(IngressController::NAMESPACE, '/staff/' . IngressController::ID_PATTERN . '/team', [
+                ['methods' => WP_REST_Server::READABLE, 'callback' => [$this, 'team'], 'permission_callback' => $read],
+            ]);
             register_rest_route(IngressController::NAMESPACE, '/club', [
                 ['methods' => WP_REST_Server::READABLE, 'callback' => [$this, 'club'], 'permission_callback' => $read],
             ]);
@@ -78,6 +81,21 @@ final class ReadController
         }
 
         return new WP_REST_Response($records);
+    }
+
+    /**
+     * The people who report to a staff member, as records sorted by name.
+     */
+    public function team(WP_REST_Request $request): WP_REST_Response
+    {
+        $id = $request->get_url_params()['id'];
+        if (!PostTypes::postId(PostTypes::STAFF, $id)) {
+            return Problem::response(404, 'Not found', 'No record with this ID.');
+        }
+        $signed = self::signed($request);
+        $posts = get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC', 'meta_key' => 'reports_to', 'meta_value' => $id]);
+
+        return new WP_REST_Response(array_map(fn (WP_Post $post): array => self::record('staff', $post, $signed), $posts));
     }
 
     /**
