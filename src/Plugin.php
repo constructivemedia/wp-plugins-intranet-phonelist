@@ -60,6 +60,7 @@ final class Plugin
 
         $log = new Log($wpdb);
         $log->maybeUpgrade();
+        Upgrade::maybeRun($log);
         self::$relations = new Relations($log, $wpdb);
         self::$relations->register();
         $photos = Photos::fromConstants($log);

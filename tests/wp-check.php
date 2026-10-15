@@ -10,6 +10,7 @@ use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\Plugin;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Schema;
+use ConstructiveMedia\IntranetPhonelist\Upgrade;
 
 defined('ABSPATH') || exit;
 
@@ -157,6 +158,26 @@ try {
     assert(count(Phonelist::staff(name: 'Testerson', department: 'T9')) === 1);
     $birthdays = array_map(fn ($person) => $person->id, Phonelist::birthdays(1));
     assert(in_array('test-t1', $birthdays, true) && !in_array('test-t2', $birthdays, true));
+
+    // Upgrade from v1: meta renamed in place (with ACF references), the position-based manager link becomes reports_to, idempotent.
+    $v1 = fn (string $title, array $meta): int => wp_insert_post(['post_type' => PostTypes::STAFF, 'post_status' => 'publish', 'post_title' => $title, 'meta_input' => $meta]);
+    $um = $v1('Test Manager', [PostTypes::SOURCE_ID => 'test-um', 'name_first' => 'Test', 'name_last_co' => 'Manager', 'e_status' => 'active']);
+    $us = $v1('Test Upgraded', [PostTypes::SOURCE_ID => 'test-us', 'name_first' => 'Old', '_name_first' => 'field_iphl_staff_name_first', 'name_last_co' => 'Upgraded',
+        'pref_name' => '', 'div_code' => 'test-UD', 'tag' => '20', 'ph_ext' => '+61894647800', 'dob' => '19850905', 'on_leave' => '', 'hide_birthday' => 'y',
+        'reports_to' => [$um], '_reports_to' => 'field_iphl_staff_link_reports_to', 'reports_to_id' => 'P9', 'full_name' => 'OLD UPGRADED', 'id' => 'test-us', 'e_status' => 'active']);
+    $ud = wp_insert_post(['post_type' => PostTypes::DIVISION, 'post_status' => 'publish', 'post_title' => 'Test Upgraded Division',
+        'meta_input' => [PostTypes::SOURCE_ID => 'test-UD', 'div_code' => 'test-UD', 'div_name' => 'TEST', 'div_addr1' => '1 Test St', 'fax' => '1', 'dx_no' => '2']]);
+    Upgrade::run();
+    Upgrade::run();
+    $m = fn (int $postId, string $key) => get_post_meta($postId, $key, true);
+    assert($m($us, 'first_name') === 'Old' && $m($us, '_first_name') === 'field_iphl_staff_first_name' && !metadata_exists('post', $us, 'name_first'));
+    assert($m($us, 'division_id') === 'test-UD' && $m($us, 'department_code') === '20' && $m($us, 'phone') === '+61894647800' && $m($us, 'date_of_birth') === '19850905');
+    assert($m($us, 'hide_birthday') === '1' && $m($us, 'status') === 'active');
+    assert((int) $m($us, 'manager') === $um && $m($us, 'reports_to') === 'test-um' && $m($us, '_manager') === PostTypes::linkKey('manager'));
+    assert(!metadata_exists('post', $us, 'full_name') && !metadata_exists('post', $us, 'reports_to_id') && !metadata_exists('post', $us, 'id'));
+    assert($m($us, PostTypes::UPDATED_AT) === Upgrade::EPOCH);
+    assert($m($ud, 'address_line1') === '1 Test St' && !metadata_exists('post', $ud, 'fax') && !metadata_exists('post', $ud, 'div_code') && !metadata_exists('post', $ud, 'div_name'));
+    assert($in->put('staff', 'test-us', $jane + ['updated_at' => $t0], 'test-run', 'api')->result === 'updated');   // the first push always applies
 
     // Jobs: a batch resolves out-of-order references, repeats by idempotency key, and a crashed job is resumed.
     $jobs = Plugin::jobs();
