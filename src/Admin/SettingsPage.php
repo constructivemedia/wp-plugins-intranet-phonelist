@@ -17,7 +17,7 @@ final class SettingsPage
     private const SLUG = 'intranet-phonelist';
     private const PER_PAGE = 100;
     private const TABS = ['jobs' => 'Jobs', 'logs' => 'Logs', 'photos' => 'Photos'];
-    private const LEVEL_COLOURS = ['error' => '#d63638', 'warning' => '#996800', 'notice' => '#2271b1', 'info' => '#50575e', 'debug' => '#8c8f94'];
+    private const LEVEL_COLOURS = ['error' => '#d63638', 'warning' => '#996800', 'notice' => '#2271b1', 'info' => '#50575e'];
 
     public function __construct(
         private readonly Jobs $jobs,
@@ -29,7 +29,7 @@ final class SettingsPage
 
     public function register(): void
     {
-        add_action('admin_menu', fn () => add_options_page('Phonelist', 'Phonelist', 'manage_options', self::SLUG, [$this, 'render']));
+        add_action('admin_menu', fn () => add_options_page('Phonelist', 'Phonelist', PostTypes::CAPABILITY, self::SLUG, [$this, 'render']));
         add_action('admin_post_intranet_phonelist_delete_logs', [$this, 'handleDeleteLogs']);
         add_action('admin_post_intranet_phonelist_oracle_import', [$this, 'handleOracleImport']);
         add_action('admin_post_intranet_phonelist_run_job', [$this, 'handleRunJob']);
@@ -100,7 +100,6 @@ final class SettingsPage
     private function renderJobs(): void
     {
         $jobs = $this->jobs->recent();
-        $when = fn (?string $utc): string => $utc ? wp_date('j M Y g:i:sa', strtotime($utc . ' UTC')) : '';
         $busy = array_filter($jobs, fn (array $job): bool => in_array($job['status'], ['queued', 'running'], true))
             || wp_next_scheduled(Plugin::ORACLE_HOOK, [get_current_user_id()]);
         ?>
@@ -121,9 +120,8 @@ final class SettingsPage
                 <tr><td colspan="8">No jobs yet.</td></tr>
             <?php endif; ?>
             <?php foreach ($jobs as $job) : ?>
-                <?php $counts = array_count_values(array_column($job['results'], 'result')); ?>
                 <tr class="iphl-entry">
-                    <td><?= esc_html($when($job['created_at'])) ?></td>
+                    <td><?= esc_html($this->when($job['created_at'])) ?></td>
                     <td>
                         <a href="<?= esc_url($this->url(['tab' => 'logs', 'run' => $job['id']])) ?>"><code><?= esc_html(substr($job['id'], 0, 8)) ?></code></a>
                         <div class="iphl-sub"><?= esc_html($job['triggered_by']) ?></div>
@@ -131,8 +129,8 @@ final class SettingsPage
                     <td><?= esc_html($job['kind'] . ($job['type'] ? " · {$job['type']}" : '')) ?></td>
                     <td><?= $this->badge(match ($job['status']) { 'failed' => 'error', 'running', 'queued' => 'notice', default => 'info' }, $job['status']) ?></td>
                     <td><?= (int) $job['done'] ?> / <?= (int) $job['total'] ?></td>
-                    <td><?= esc_html(implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts))) ?></td>
-                    <td><?= esc_html($when($job['finished_at'])) ?></td>
+                    <td><?= esc_html(Jobs::summary($job['results'])) ?></td>
+                    <td><?= esc_html($this->when($job['finished_at'])) ?></td>
                     <td>
                         <button type="button" class="button button-small iphl-toggle" aria-expanded="false" aria-controls="iphl-job-<?= esc_attr($job['id']) ?>">View</button>
                         <?php if (in_array($job['status'], ['queued', 'failed'], true)) : ?>
@@ -220,7 +218,6 @@ final class SettingsPage
         $paged = max(1, absint($_GET['paged'] ?? 1));
         $log = $this->log->page($paged, self::PER_PAGE, $filters);
         $postUrl = admin_url('admin-post.php');
-        $when = fn (string $utc): string => wp_date('j M Y g:i:sa', strtotime($utc . ' UTC'));
         ?>
         <form method="get" style="margin:12px 0 8px">
             <input type="hidden" name="page" value="<?= esc_attr(self::SLUG) ?>">
@@ -231,7 +228,7 @@ final class SettingsPage
                 <?php foreach ($runs as $runId => $run) : ?>
                     <option value="<?= esc_attr($runId) ?>" <?php selected($filters['run_id'], $runId); ?>>
                         <?= esc_html(implode(' · ', array_filter([
-                            $when($run->started),
+                            $this->when($run->started),
                             $this->who($run->triggered_by, (int) $run->user_id),
                             $run->status !== 'done' ? $run->status : null, // Only worth showing when a job didn't finish.
                         ]))) ?>
@@ -263,7 +260,7 @@ final class SettingsPage
             <?php endif; ?>
             <?php foreach ($log['rows'] as $row) : ?>
                 <tr class="iphl-entry">
-                    <td><?= esc_html($when($row->created_at)) ?></td>
+                    <td><?= esc_html($this->when($row->created_at)) ?></td>
                     <td>
                         <a href="<?= esc_url(add_query_arg(['run' => $row->run_id, 'paged' => false])) ?>"><code><?= esc_html(substr($row->run_id, 0, 8)) ?></code></a>
                         <div class="iphl-sub"><?= esc_html($this->who($row->triggered_by, (int) $row->user_id)) ?></div>
@@ -320,6 +317,14 @@ final class SettingsPage
     }
 
     /**
+     * A UTC time from the tables ('2026-10-15 01:30:00' or '2026-10-15T01:30:00Z') in the site's timezone; '' for none.
+     */
+    private function when(?string $utc): string
+    {
+        return $utc ? wp_date('j M Y g:i:sa', strtotime(rtrim(str_replace('T', ' ', $utc), 'Z') . ' UTC')) : '';
+    }
+
+    /**
      * 'api', 'oracle' or 'system', or 'manual · Display Name' when a logged-in user did it.
      */
     private function who(string $trigger, int $userId): string
@@ -366,7 +371,7 @@ final class SettingsPage
 
     private function authorize(string $nonceAction): void
     {
-        if (!current_user_can('manage_options')) {
+        if (!current_user_can(PostTypes::CAPABILITY)) {
             wp_die('Not allowed.', 403);
         }
         check_admin_referer($nonceAction);
@@ -374,7 +379,7 @@ final class SettingsPage
 
     private function redirect(array $args): never
     {
-        wp_safe_redirect(add_query_arg($args, admin_url('options-general.php?page=' . self::SLUG)));
+        wp_safe_redirect($this->url($args));
         exit;
     }
 }

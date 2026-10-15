@@ -64,6 +64,9 @@ T2_QUERY='2026-10-15T10:00:00%2B08:00' # '+' must be encoded in a query string
 JANE='"first_name":"Jane","last_name":"Api","status":"active","date_of_birth":"1985-09-05"'
 
 expect "PUT creates" 201 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T1\"}" signed)"
+expect "a body id that differs from the URL is refused" 422 "$(request PUT /staff/test-api-1 "{\"id\":\"test-api-9\",$JANE,\"updated_at\":\"$T1\"}" signed)"
+expect "...and doesn't write the other record" 404 "$(request GET /staff/test-api-9 '' app)"
+expect "a type in the query can't change the route" 200 "$(request GET '/staff/test-api-1?type=nope' '' app)"
 expect "PUT again is unchanged" 200 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T1\"}" signed)"
 has "unchanged result" '"result":"unchanged"'
 expect "older PUT is refused" 409 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T0\"}" signed)"

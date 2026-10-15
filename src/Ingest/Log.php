@@ -10,11 +10,9 @@ use wpdb;
  */
 final class Log
 {
-    public const LEVELS = ['error', 'warning', 'notice', 'info', 'debug'];
+    public const LEVELS = ['error', 'warning', 'notice', 'info'];
 
     private const DEFAULT_DAYS = 90;
-    /** Rows deleted per query, so the table is never locked for long. */
-    private const DELETE_CHUNK = 1000;
 
     /** Bump when the table changes; the table is upgraded on the next load. */
     private const SCHEMA = '4';
@@ -125,28 +123,25 @@ final class Log
     }
 
     /**
-     * @return array<string, object{started: string, triggered_by: string, user_id: int, status: ?string}> Recent runs, newest first, keyed by run ID.
+     * @return array<string, object{started: string, triggered_by: string, user_id: int, status: ?string}> The 50 most recent runs, newest first, keyed by run ID.
      */
-    public function runs(int $limit = 50): array
+    public function runs(): array
     {
-        $rows = $this->db->get_results($this->db->prepare(
+        $rows = $this->db->get_results(
             "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by, MAX(user_id) AS user_id,
                 MAX(CASE WHEN action = 'job_end' THEN JSON_UNQUOTE(JSON_EXTRACT(context, '$.status')) END) AS status
-            FROM {$this->table} GROUP BY run_id ORDER BY started DESC LIMIT %d",
-            $limit
-        ));
+            FROM {$this->table} GROUP BY run_id ORDER BY started DESC LIMIT 50"
+        );
 
         return array_column($rows, null, 'run_id');
     }
 
     /**
-     * Days entries are kept: the 'intranet_phonelist_log_days' filter, else INTRANET_PHONELIST_LOG_DAYS, else 90.
+     * Days entries are kept: INTRANET_PHONELIST_LOG_DAYS, else 90.
      */
     public static function days(): int
     {
-        $days = defined('INTRANET_PHONELIST_LOG_DAYS') ? (int) INTRANET_PHONELIST_LOG_DAYS : self::DEFAULT_DAYS;
-
-        return max(1, (int) apply_filters('intranet_phonelist_log_days', $days));
+        return max(1, defined('INTRANET_PHONELIST_LOG_DAYS') ? (int) INTRANET_PHONELIST_LOG_DAYS : self::DEFAULT_DAYS);
     }
 
     /**
@@ -158,21 +153,12 @@ final class Log
     }
 
     /**
-     * Delete entries older than $days, or everything when $days is 0, a chunk at a time. Returns rows deleted.
+     * Delete entries older than $days, or everything when $days is 0. Returns rows deleted.
      */
     public function delete(int $days = 0): int
     {
-        $before = $days > 0 ? gmdate('Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS) : '9999-12-31 23:59:59';
-        $total = 0;
-        do {
-            $deleted = (int) $this->db->query($this->db->prepare(
-                "DELETE FROM {$this->table} WHERE created_at < %s ORDER BY id LIMIT %d",
-                $before,
-                self::DELETE_CHUNK
-            ));
-            $total += $deleted;
-        } while ($deleted === self::DELETE_CHUNK);
-
-        return $total;
+        return (int) ($days > 0
+            ? $this->db->query($this->db->prepare("DELETE FROM {$this->table} WHERE created_at < %s", gmdate('Y-m-d H:i:s', time() - $days * DAY_IN_SECONDS)))
+            : $this->db->query("DELETE FROM {$this->table}"));
     }
 }

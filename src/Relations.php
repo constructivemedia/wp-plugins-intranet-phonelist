@@ -47,12 +47,10 @@ final class Relations
                 // A company named after the division, unless 'intranet_phonelist_new_division_company' names another (the Oracle import does).
                 $name = (string) apply_filters('intranet_phonelist_new_division_company', get_post_field('post_title', $postId, 'raw'), $id);
                 [$companyId, $new] = $this->companyFor($name);
-                PostTypes::store($postId, 'field_iphl_division_company', 'company', $companyId ?: '');
+                PostTypes::store($postId, PostTypes::fieldKey(PostTypes::DIVISION, 'company'), 'company', $companyId ?: '');
                 $changes['company'] = ['from' => null, 'to' => $name . ($new ? ' (new company)' : '')];
             }
-            foreach ($this->staffWhere('division_id', $id) as $staff) {
-                $this->linkStaff($staff);
-            }
+            $this->refreshDivision($postId);
         }
 
         return $changes;
@@ -79,7 +77,6 @@ final class Relations
             'companies' => ['company' => [PostTypes::DIVISION, PostTypes::STAFF]],
             'divisions' => ['division' => [PostTypes::STAFF]],
             'staff' => ['manager' => [PostTypes::STAFF]],
-            default => [],
         };
         foreach ($cleared as $name => $postTypes) {
             foreach ($this->postsWhere($postTypes, $name, (string) $postId) as $linked) {

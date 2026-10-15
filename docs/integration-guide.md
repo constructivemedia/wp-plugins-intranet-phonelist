@@ -7,7 +7,7 @@ Data Hub pushes companies, divisions and staff to the intranet phone list. This 
 ## The rules in brief
 
 1. **Records are identified by your ID.** `id` is the Data Hub ID of the company, division or staff member. We never return our own IDs, and we never match records by name.
-2. **Every record carries `updated_at`.** It's an ISO 8601 date and time with a timezone offset, for example `2026-10-15T09:30:00+08:00`. If you send something older than what we hold, or older than when we deleted the record, we refuse it with `409`. That way retries and out-of-order deliveries can't overwrite newer data or bring back someone who has left.
+2. **Every record carries `updated_at`.** It's an ISO 8601 date and time with a timezone offset, `YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM)`, for example `2026-10-15T09:30:00+08:00`. Fractions beyond 6 digits are cut to 6. If you send something older than what we hold, or older than when we deleted the record, we refuse it with `409`. That way retries and out-of-order deliveries can't overwrite newer data or bring back someone who has left.
 3. **Every write is signed** with the shared secret (see Signing).
 4. **Send our format, not Oracle's:**
    - Dates are `YYYY-MM-DD`.
@@ -151,7 +151,7 @@ Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one e
 
 **Retries:**
 - **Single records:** safe to resend as they are. A repeat with the same `updated_at` is `unchanged`, and an older one is `409`.
-- **Batches and snapshots:** send an `Idempotency-Key` header, a unique value per logical request (up to 100 characters). Resending with the same key returns the original job (`200`) instead of creating a new one.
+- **Batches and snapshots:** send an `Idempotency-Key` header, a unique value per logical request (up to 100 characters). Resending with the same key returns the original job (`200`) instead of creating a new one. Keys are shared across all batches and snapshots, longer keys are cut to 100 characters, and a key is forgotten when its job is pruned after 30 days.
 - **Back-off:** on `503` or a network error, retry after 5 seconds, then 30 seconds, then 2 minutes, then 10 minutes.
 
 ## Records
@@ -184,7 +184,7 @@ Poll `GET /jobs/{job}` until `status` is `done` or `failed`. `results` has one e
 | `updated_at` | timestamp, required | |
 | `first_name`, `last_name` | string, required | |
 | `preferred_name` | string | Shown instead of `first_name` when set |
-| `status` | string, required | `active` stays on the phone list. **Any other value removes the person**, the same as a DELETE. The list of values is still being finalised. |
+| `status` | string, required | `active` (on the phone list) or `inactive` (removed, the same as a DELETE). **Any other value is refused with `422`**, so a mistake can't remove anyone. |
 | `email` | string | Must be a valid address |
 | `mobile`, `phone` | string | Any format; stored as E.164. `phone` is the direct number. A number we can't read is kept as sent, and the reply includes a `warnings` entry for it. |
 | `extension` | string | VoIP extension |

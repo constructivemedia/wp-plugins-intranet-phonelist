@@ -37,8 +37,7 @@ final class JobCommand
         }
 
         $job = $this->jobs->get($args[0]);
-        $counts = array_count_values(array_column($job['results'], 'result'));
-        WP_CLI::log(implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts)));
+        WP_CLI::log(Jobs::summary($job['results']));
         $job['status'] === 'done' ? WP_CLI::success('Done.') : WP_CLI::error("Job {$job['status']}: {$job['error']}");
     }
 }

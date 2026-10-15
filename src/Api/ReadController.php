@@ -55,16 +55,17 @@ final class ReadController
 
     public function one(WP_REST_Request $request): WP_REST_Response
     {
-        $postId = PostTypes::postId(Schema::TYPES[$request['type']], $request['id']);
+        ['type' => $type, 'id' => $id] = $request->get_url_params();
+        $postId = PostTypes::postId(Schema::TYPES[$type], $id);
 
         return $postId
-            ? new WP_REST_Response(self::record($request['type'], get_post($postId), self::signed($request)))
+            ? new WP_REST_Response(self::record($type, get_post($postId), self::signed($request)))
             : Problem::response(404, 'Not found', 'No record with this ID.');
     }
 
     public function all(WP_REST_Request $request): WP_REST_Response
     {
-        $type = $request['type'];
+        $type = $request->get_url_params()['type'];
         $signed = self::signed($request);
         $posts = get_posts(['post_type' => Schema::TYPES[$type], 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']);
         update_meta_cache('post', wp_list_pluck($posts, 'ID'));
@@ -102,16 +103,15 @@ final class ReadController
             'id' => (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true) ?: null,
             'updated_at' => (string) get_post_meta($post->ID, PostTypes::UPDATED_AT, true) ?: null,
         ];
-        foreach (Schema::fields($type) as $name => $config) {
+        $fields = Schema::fields($type);
+        foreach (Schema::stored($type, $post->ID) as $name => $value) {
             if (!$private && in_array($name, Schema::PRIVATE, true)) {
                 continue;
             }
-            $value = (string) (empty($config['title']) ? get_post_meta($post->ID, $name, true) : $post->post_title);
-            $record[$name] = match (true) {
-                $value === '' => null,
-                $config['kind'] === 'date' => substr($value, 0, 4) . '-' . substr($value, 4, 2) . '-' . substr($value, 6, 2),
-                $config['kind'] === 'bool' => $value === '1',
+            $record[$name] = match ($fields[$name]['kind']) {
                 default => $value,
+                'date' => $value === null ? null : substr($value, 0, 4) . '-' . substr($value, 4, 2) . '-' . substr($value, 6, 2),
+                'bool' => $value === null ? null : $value === '1',
             };
         }
 

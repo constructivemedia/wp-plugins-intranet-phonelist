@@ -11,7 +11,7 @@ namespace ConstructiveMedia\IntranetPhonelist\Ingest;
 final class Photos
 {
     /** Post meta: the photo_url last downloaded, so the same URL is never fetched twice. */
-    public const URL = '_iphl_photo_url';
+    private const URL = '_iphl_photo_url';
 
     private const DOWNLOAD_TIMEOUT = 15;
 

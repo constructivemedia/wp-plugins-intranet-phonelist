@@ -35,7 +35,7 @@ Everything goes through one place, `Ingest\Ingestor`, whether it comes from a si
 
 - **Identity:** records are matched only by their Data Hub `id`, stored in `_iphl_source_id`.
 - **Order:** every record carries `updated_at`. Older than what's stored is refused (`409`); identical data is `unchanged`.
-- **Status:** `active` staff are kept. Any other status deletes the person (`Schema::KEPT_STATUSES`, one line to change).
+- **Status:** `active` staff are kept and `inactive` staff are removed. Any other value is refused (`422`), so an unexpected status can't remove anyone (`Schema::STATUSES`).
 - **Locked fields:** pushed fields can't be changed in the editor. Hand-set fields stay editable: a division's **Company**, and a staff member's **JWH Club**.
 - **Batches and snapshots** go into a queue table (`wp_iphl_jobs`):
   - The request gets `202` straight away, and the job is processed after the response is sent.
@@ -88,7 +88,7 @@ Locally the folder is `assets/staffPhotos/`, which is gitignored: never commit s
   - **Jobs:** recent batches and snapshots, with a result per item. A waiting job has **Run now**, and a failed one **Retry** (also `wp phonelist job <id>`). Development sites also get **Import from Oracle** here.
   - **Logs:** every API request and every record outcome (including `unchanged` and `stale`), filterable by job, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value.
   - **Photos:** staff without a photo.
-- **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`, or the `intranet_phonelist_log_days` filter), and finished jobs for 30. Both are pruned daily.
+- **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`), and finished jobs for 30. Both are pruned daily.
 
 ## Using it in a theme
 
@@ -181,9 +181,9 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 | `src/Schema.php` | The data contract: every field, validation, the status rule |
 | `src/PostTypes.php` | Post types, the JWH Club taxonomy, ACF fields (from `Schema`) |
 | `src/Relations.php` | Division, company and manager links |
-| `src/Ingest/` | `Ingestor` (the only writer of records), `Jobs` (queue), `Photos`, `PhoneNumbers`, `Log` (audit table) |
+| `src/Ingest/` | `Ingestor` (the only writer of records), `Outcome` (one record's result), `Jobs` (queue), `Photos`, `PhoneNumbers`, `Log` (audit table) |
 | `src/Api/` | `IngressController`, `ReadController`, `Signature`, `Problem` |
-| `src/Oracle/` | `Source` and `Adapter`: the development import |
+| `src/Oracle/` | `Adapter`: the development import |
 | `src/Admin/` | `SettingsPage` (Jobs, Logs, Photos), `Relationships` (boxes on the edit screens) |
 | `src/Cli/` | `club-import`, `job`, `oracle-import` |
 | `src/Upgrade.php` | One-off v1 → v2 data upgrade, run on first load |

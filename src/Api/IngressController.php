@@ -47,9 +47,7 @@ final class IngressController
         add_action('rest_api_init', function (): void {
             $signed = [Signature::class, 'check'];
             register_rest_route(self::NAMESPACE, '/' . self::TYPE_PATTERN . '/' . self::ID_PATTERN, [
-                ['methods' => 'PUT', 'callback' => [$this, 'put'], 'permission_callback' => $signed],
-                ['methods' => 'PATCH', 'callback' => [$this, 'patch'], 'permission_callback' => $signed],
-                ['methods' => WP_REST_Server::DELETABLE, 'callback' => [$this, 'delete'], 'permission_callback' => $signed],
+                ['methods' => 'PUT, PATCH, DELETE', 'callback' => [$this, 'write'], 'permission_callback' => $signed],
             ]);
             register_rest_route(self::NAMESPACE, '/' . self::TYPE_PATTERN, [
                 ['methods' => 'PUT', 'callback' => [$this, 'snapshot'], 'permission_callback' => $signed],
@@ -66,39 +64,30 @@ final class IngressController
         add_filter('rest_post_dispatch', [$this, 'finish'], 10, 3);
     }
 
-    public function put(WP_REST_Request $request): WP_REST_Response
+    /**
+     * PUT, PATCH or DELETE one record. The type and id come from the URL only (never from the body or query string).
+     * A DELETE takes updated_at from its body or the query string.
+     */
+    public function write(WP_REST_Request $request): WP_REST_Response
     {
-        $body = $this->body($request);
-
-        return $body instanceof WP_REST_Response ? $body : $this->respond($this->ingestor->put($request['type'], $request['id'], $body, $this->runId(), $this->trigger($request)));
-    }
-
-    public function patch(WP_REST_Request $request): WP_REST_Response
-    {
-        $body = $this->body($request);
-
-        return $body instanceof WP_REST_Response ? $body : $this->respond($this->ingestor->patch($request['type'], $request['id'], $body, $this->runId(), $this->trigger($request)));
-    }
-
-    public function delete(WP_REST_Request $request): WP_REST_Response
-    {
-        $body = $request->get_body() === '' ? [] : $this->body($request);
+        $delete = $request->get_method() === 'DELETE';
+        $body = $delete && $request->get_body() === '' ? [] : $this->body($request);
         if ($body instanceof WP_REST_Response) {
             return $body;
         }
-        $updatedAt = $body['updated_at'] ?? $request->get_param('updated_at');
-        if (!is_string($updatedAt) || $updatedAt === '') {
-            return Problem::response(422, 'Invalid request', 'A delete needs updated_at, in the body or the query string.', [['field' => 'updated_at', 'message' => 'Required.']]);
+        if ($delete) {
+            $body = ['updated_at' => $body['updated_at'] ?? $request->get_query_params()['updated_at'] ?? null];
         }
+        ['type' => $type, 'id' => $id] = $request->get_url_params();
 
-        return $this->respond($this->ingestor->delete($request['type'], $request['id'], $updatedAt, $this->runId(), $this->trigger($request)));
+        return $this->respond($this->ingestor->apply(['op' => strtolower($request->get_method()), 'type' => $type, 'id' => $id, 'data' => $body], $this->runId(), $this->trigger($request)));
     }
 
     public function snapshot(WP_REST_Request $request): WP_REST_Response
     {
         $records = $this->items($request, 'records', self::MAX_SNAPSHOT);
 
-        return $records instanceof WP_REST_Response ? $records : $this->queue($request, 'snapshot', $request['type'], $records);
+        return $records instanceof WP_REST_Response ? $records : $this->queue($request, 'snapshot', $request->get_url_params()['type'], $records);
     }
 
     public function batch(WP_REST_Request $request): WP_REST_Response
@@ -110,7 +99,7 @@ final class IngressController
 
     public function job(WP_REST_Request $request): WP_REST_Response
     {
-        $job = $this->jobs->get($request['id']);
+        $job = $this->jobs->get($request->get_url_params()['id']);
 
         return $job ? new WP_REST_Response($job) : Problem::response(404, 'Not found', 'No job with this ID.');
     }
@@ -192,7 +181,7 @@ final class IngressController
             return Problem::response(422, 'Invalid request', "The body needs a \"$key\" array.", [['field' => $key, 'message' => 'Required: an array.']]);
         }
         if ($items === []) {
-            return Problem::response(422, 'Invalid request', $key === 'records' ? 'A snapshot must contain at least one record.' : 'A batch must contain at least one operation.', [['field' => $key, 'message' => 'Must not be empty.']]);
+            return Problem::response(422, 'Invalid request', "The \"$key\" array must not be empty.", [['field' => $key, 'message' => 'Must not be empty.']]);
         }
         if (count($items) > $max) {
             return Problem::response(413, 'Request too large', "At most $max $key per request.");

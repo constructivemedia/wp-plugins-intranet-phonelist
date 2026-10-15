@@ -9,12 +9,12 @@ use DateTimeImmutable;
 use Throwable;
 
 /**
- * The only code that writes companies, divisions and staff. Used by the API's single-record endpoints,
- * by batch and snapshot jobs, and by the Oracle import. Every outcome is logged, one row per record.
+ * The only code that writes companies, divisions and staff. Used by the API, by batch and snapshot jobs, and by the
+ * Oracle import. Every outcome is logged, one row per record.
  *
  * Records are found by their Data Hub ID. Each write is checked against the updated_at last applied:
- * older is refused (stale), the same data is 'unchanged', anything else is written. Deleted records are
- * remembered for a while, so an older push arriving late can't bring them back.
+ * older is refused (stale), the same data is 'unchanged', anything else is written. Deletions are remembered for a
+ * while, so an older push, or one with the same updated_at, arriving late can't bring the record back.
  */
 final class Ingestor
 {
@@ -46,23 +46,24 @@ final class Ingestor
     }
 
     /**
-     * Remove a record, unless it was updated after $updatedAt. Gone already is still 'deleted'.
+     * Remove a record, unless it was updated after $updatedAt. Gone already is still 'deleted' (and remembered).
      */
     public function delete(string $type, string $id, string $updatedAt, string $runId, string $trigger): Outcome
     {
         return $this->logged($type, $id, $runId, $trigger, function () use ($type, $id, $updatedAt): Outcome {
-            $time = Schema::updatedAt(['updated_at' => $updatedAt]);
+            $time = Schema::updatedAt($updatedAt);
             if ($time === null) {
                 return new Outcome('invalid', 422, errors: [['field' => 'updated_at', 'message' => 'Must be an ISO 8601 date and time with a timezone offset.']]);
             }
             $postId = $this->postId($type, $id);
             if (!$postId) {
+                $this->bury($type, $id, $updatedAt);
                 return new Outcome('deleted', 204, message: 'Already gone.');
             }
-            $label = get_post_field('post_title', $postId, 'raw');
-            if ($this->isOlder($postId, $time)) {
-                return new Outcome('stale', 409, $label, message: 'Older than the stored record (' . get_post_meta($postId, PostTypes::UPDATED_AT, true) . ').');
+            if ($stale = $this->stale($postId, $time)) {
+                return $stale;
             }
+            $label = get_post_field('post_title', $postId, 'raw');
             $this->remove($type, $id, $postId, $updatedAt);
 
             return new Outcome('deleted', 204, $label);
@@ -90,7 +91,7 @@ final class Ingestor
         if (!is_array($data)) {
             $errors[] = ['field' => 'data', 'message' => 'Must be an object.'];
         } elseif (($op['op'] ?? null) === 'delete' && !is_string($data['updated_at'] ?? null)) {
-            $errors[] = ['field' => 'updated_at', 'message' => 'Required in data for a delete.'];
+            $errors[] = ['field' => 'updated_at', 'message' => 'Required for a delete.'];
         }
         if ($errors) {
             return $this->logged((string) $type, is_string($id) ? $id : '', $runId, $trigger, fn (): Outcome => new Outcome('invalid', 422, errors: $errors));
@@ -117,41 +118,37 @@ final class Ingestor
         if ($errors) {
             return new Outcome('invalid', 422, errors: $errors);
         }
-        $time = Schema::updatedAt($input);
+        $time = Schema::updatedAt($input['updated_at']);
 
         $postId = $this->postId($type, $id);
         if (!$postId && $partial) {
             return new Outcome('not_found', 404, message: 'No record with this ID. Send the whole record with PUT to create it.');
         }
         $deleted = $postId ? null : $this->tombstone($type, $id);
-        if ($deleted && $time < $deleted) {
-            return new Outcome('stale', 409, message: 'Older than the deletion of this record (' . $deleted->format(DATE_RFC3339) . ').');
+        if ($deleted && $time <= $deleted) {
+            return new Outcome('stale', 409, message: 'Not newer than the deletion of this record (' . $deleted->format(DATE_RFC3339) . ').');
         }
-        if ($postId && $this->isOlder($postId, $time)) {
-            return new Outcome('stale', 409, get_post_field('post_title', $postId, 'raw'), message: 'Older than the stored record (' . get_post_meta($postId, PostTypes::UPDATED_AT, true) . ').');
+        if ($postId && ($stale = $this->stale($postId, $time))) {
+            return $stale;
         }
 
-        $old = $postId ? $this->stored($type, $postId) : [];
+        $old = $postId ? Schema::stored($type, $postId) : [];
         $new = $partial ? array_merge($old, $data) : $data;
         $label = $type === 'staff'
             ? PostTypes::displayName($new['preferred_name'] ?? null, $new['first_name'] ?? null, $new['last_name'] ?? null)
             : (string) ($new['name'] ?? '');
 
-        if ($type === 'staff' && !Schema::keeps($new['status'] ?? null)) {
+        if ($type === 'staff' && !(Schema::STATUSES[$new['status'] ?? ''] ?? true)) {
             if ($postId) {
                 $this->remove($type, $id, $postId, $input['updated_at']);
+            } else {
+                $this->bury($type, $id, $input['updated_at']);
             }
 
             return new Outcome('deleted', 200, $label, message: "Status '{$new['status']}' is not kept on the phone list.");
         }
 
         $hash = self::hash($new);
-        if ($postId && get_post_meta($postId, PostTypes::SOURCE_HASH, true) === $hash) {
-            update_post_meta($postId, PostTypes::UPDATED_AT, wp_slash($input['updated_at']));
-
-            return new Outcome('unchanged', 200, $label, warnings: $warnings);
-        }
-
         $created = !$postId;
         if ($created) {
             $postId = wp_insert_post(wp_slash(['post_type' => Schema::TYPES[$type], 'post_status' => 'publish', 'post_title' => $label]), true);
@@ -160,6 +157,10 @@ final class Ingestor
             }
             update_post_meta($postId, PostTypes::SOURCE_ID, wp_slash($id));
             $this->unbury($type, $id);
+        } elseif (get_post_meta($postId, PostTypes::SOURCE_HASH, true) === $hash) {
+            update_post_meta($postId, PostTypes::UPDATED_AT, wp_slash($input['updated_at']));
+
+            return new Outcome('unchanged', 200, $label, warnings: [...$warnings, ...$this->photo($type, $postId, $new, false)]);
         } elseif (get_post_field('post_title', $postId, 'raw') !== $label) {
             wp_update_post(wp_slash(['ID' => $postId, 'post_title' => $label]));
         }
@@ -173,25 +174,42 @@ final class Ingestor
         update_post_meta($postId, PostTypes::SOURCE_HASH, $hash);
 
         $changes = self::changes($old, $new) + $this->relations->afterWrite($type, $postId, $created);
-        $photoProblem = $type === 'staff' ? $this->photos->afterWrite($postId, $new, $created) : null;
-        if ($photoProblem !== null) {
-            $warnings[] = ['field' => 'photo_url', 'message' => $photoProblem];
-        }
 
-        return new Outcome($created ? 'created' : 'updated', $created ? 201 : 200, $label, $changes, warnings: $warnings);
+        return new Outcome($created ? 'created' : 'updated', $created ? 201 : 200, $label, $changes, warnings: [...$warnings, ...$this->photo($type, $postId, $new, $created)]);
+    }
+
+    /**
+     * Give a staff member their photo (see Photos); a problem becomes a warning on the record.
+     *
+     * @return array<array{field: string, message: string}>
+     */
+    private function photo(string $type, int $postId, array $values, bool $created): array
+    {
+        $problem = $type === 'staff' ? $this->photos->afterWrite($postId, $values, $created) : null;
+
+        return $problem === null ? [] : [['field' => 'photo_url', 'message' => $problem]];
     }
 
     /**
      * Run $work and log its outcome as one row; anything thrown becomes an 'error' outcome.
+     * Titles are saved as sent: WordPress would otherwise escape them ('&' → '&amp;') when no user is logged in.
      *
      * @param callable(): Outcome $work
      */
     private function logged(string $type, string $id, string $runId, string $trigger, callable $work): Outcome
     {
+        $kses = (bool) has_filter('title_save_pre', 'wp_filter_kses');
+        if ($kses) {
+            kses_remove_filters();
+        }
         try {
             $outcome = $work();
         } catch (Throwable $e) {
             $outcome = new Outcome('error', 500, message: $e->getMessage());
+        } finally {
+            if ($kses) {
+                kses_init_filters();
+            }
         }
 
         $level = match (true) {
@@ -203,6 +221,19 @@ final class Ingestor
         $this->log->write($runId, $trigger, $level, $outcome->result, Schema::TYPES[$type] ?? null, $id !== '' ? $id : null, $outcome->label, $outcome->message, $context ?: null);
 
         return $outcome;
+    }
+
+    /**
+     * A 409 if $time is older than the record's stored updated_at, else null.
+     */
+    private function stale(int $postId, ?DateTimeImmutable $time): ?Outcome
+    {
+        $stored = get_post_meta($postId, PostTypes::UPDATED_AT, true);
+        $storedTime = Schema::updatedAt($stored);
+
+        return $storedTime !== null && $time !== null && $time < $storedTime
+            ? new Outcome('stale', 409, get_post_field('post_title', $postId, 'raw'), message: "Older than the stored record ($stored).")
+            : null;
     }
 
     /**
@@ -226,13 +257,12 @@ final class Ingestor
     {
         [$updatedAt, $deletedAt] = get_option(self::TOMBSTONES, [])["$type:$id"] ?? [null, 0];
 
-        return $deletedAt > time() - self::TOMBSTONE_DAYS * DAY_IN_SECONDS ? Schema::updatedAt(['updated_at' => $updatedAt]) : null;
+        return $deletedAt > self::tombstoneCutoff() ? Schema::updatedAt($updatedAt) : null;
     }
 
     private function bury(string $type, string $id, string $updatedAt): void
     {
-        $cutoff = time() - self::TOMBSTONE_DAYS * DAY_IN_SECONDS;
-        $tombstones = array_filter(get_option(self::TOMBSTONES, []), fn (array $tombstone): bool => $tombstone[1] > $cutoff);
+        $tombstones = array_filter(get_option(self::TOMBSTONES, []), fn (array $tombstone): bool => $tombstone[1] > self::tombstoneCutoff());
         $tombstones["$type:$id"] = [$updatedAt, time()];
         update_option(self::TOMBSTONES, $tombstones, false);
     }
@@ -246,25 +276,9 @@ final class Ingestor
         }
     }
 
-    private function isOlder(int $postId, ?DateTimeImmutable $time): bool
+    private static function tombstoneCutoff(): int
     {
-        $stored = Schema::updatedAt(['updated_at' => get_post_meta($postId, PostTypes::UPDATED_AT, true)]);
-
-        return $stored !== null && $time !== null && $time < $stored;
-    }
-
-    /**
-     * The stored values of every field, as the ingest wrote them ('' read back as null).
-     */
-    private function stored(string $type, int $postId): array
-    {
-        $values = [];
-        foreach (Schema::fields($type) as $name => $config) {
-            $value = empty($config['title']) ? get_post_meta($postId, $name, true) : get_post_field('post_title', $postId, 'raw');
-            $values[$name] = $value === '' || $value === false ? null : (string) $value;
-        }
-
-        return $values;
+        return time() - self::TOMBSTONE_DAYS * DAY_IN_SECONDS;
     }
 
     /**

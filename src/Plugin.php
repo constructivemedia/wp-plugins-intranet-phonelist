@@ -10,14 +10,13 @@ use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Cli\JobCommand;
 use ConstructiveMedia\IntranetPhonelist\Cli\OracleImportCommand;
 use ConstructiveMedia\IntranetPhonelist\Oracle\Adapter;
-use ConstructiveMedia\IntranetPhonelist\Oracle\Source;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
 
 /**
- * Wires the plugin into WordPress. The only place objects are built.
+ * Wires the plugin into WordPress: the one place its services are built and hooked up.
  */
 final class Plugin
 {
@@ -31,7 +30,7 @@ final class Plugin
     private static Adapter $oracle;
 
     /**
-     * The one Ingestor, for the API, jobs, the Oracle import and tests/wp-check.php.
+     * The services, for tests/wp-check.php.
      */
     public static function ingestor(): Ingestor
     {
@@ -69,7 +68,7 @@ final class Plugin
         self::$ingestor = new Ingestor($log, self::$relations, $photos);
         self::$jobs = new Jobs(self::$ingestor, self::$relations, $log, $wpdb);
         self::$jobs->register();
-        self::$oracle = new Adapter(Source::fromConstants(), self::$ingestor, self::$jobs);
+        self::$oracle = new Adapter(self::$ingestor, self::$jobs);
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
@@ -79,7 +78,11 @@ final class Plugin
         $postTypes->lock();
         (new IngressController(self::$ingestor, self::$jobs, $log))->register();
         (new ReadController())->register();
-        register_activation_hook($pluginFile, [$log, 'install']);
+        register_deactivation_hook($pluginFile, function (): void {
+            wp_clear_scheduled_hook(self::DAILY_HOOK);
+            wp_clear_scheduled_hook(self::ORACLE_HOOK);
+            Jobs::unschedule();
+        });
 
         // Daily housekeeping: expired log entries and finished jobs.
         add_action(self::DAILY_HOOK, [$log, 'prune']);
@@ -94,13 +97,13 @@ final class Plugin
         });
 
         if (is_admin()) {
-            (new SettingsPage(self::$jobs, $photos, $log, self::$oracle->configured()))->register();
+            (new SettingsPage(self::$jobs, $photos, $log, Adapter::configured()))->register();
             (new Relationships())->register();
         }
         if (defined('WP_CLI') && WP_CLI) {
             (new ClubCommand())->register();
             (new JobCommand(self::$jobs))->register();
-            if (self::$oracle->configured()) {
+            if (Adapter::configured()) {
                 (new OracleImportCommand(self::$oracle))->register();
             }
         }

@@ -136,16 +136,34 @@ final class Jobs
     }
 
     /**
-     * @return array<array> The most recent jobs, newest first.
+     * @return array<array> The 50 most recent jobs, newest first.
      */
-    public function recent(int $limit = 50): array
+    public function recent(): array
     {
-        $rows = $this->db->get_results($this->db->prepare(
-            "SELECT id, kind, type, status, triggered_by, results, error, total, cursor_at, created_at, finished_at FROM {$this->table} ORDER BY created_at DESC LIMIT %d",
-            $limit
-        ));
+        $rows = $this->db->get_results(
+            "SELECT id, kind, type, status, triggered_by, results, error, total, cursor_at, created_at, finished_at FROM {$this->table} ORDER BY created_at DESC LIMIT 50"
+        );
 
         return array_map($this->describe(...), $rows);
+    }
+
+    /**
+     * Result counts for people: '3 created, 2 unchanged'.
+     */
+    public static function summary(array $results): string
+    {
+        $counts = array_count_values(array_column($results, 'result'));
+        ksort($counts);
+
+        return implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts));
+    }
+
+    /**
+     * On deactivation: stop the sweep (its every-minute schedule goes with the plugin).
+     */
+    public static function unschedule(): void
+    {
+        wp_clear_scheduled_hook(self::SWEEP_HOOK);
     }
 
     /**
@@ -265,6 +283,7 @@ final class Jobs
             return true;
         }
         $operations = json_decode($job->payload, true) ?: [];
+        @set_time_limit(0); // A large snapshot can outlast PHP's default limit, wherever the job is run from.
         $this->log->write($id, $job->triggered_by, 'info', 'job_start', $job->type ? (Schema::TYPES[$job->type] ?? null) : null, null, $job->kind, null, ['items' => (int) $job->total, 'attempt' => (int) $job->attempts]);
 
         try {
@@ -279,7 +298,8 @@ final class Jobs
             }
             $this->finish($job, 'done', $results);
         } catch (Throwable $e) {
-            $this->db->update($this->table, ['status' => (int) $job->attempts >= self::MAX_ATTEMPTS ? 'failed' : 'queued', 'error' => $e->getMessage()], ['id' => $id]);
+            $failed = (int) $job->attempts >= self::MAX_ATTEMPTS;
+            $this->db->update($this->table, ['status' => $failed ? 'failed' : 'queued', 'error' => $e->getMessage(), 'finished_at' => $failed ? gmdate('Y-m-d H:i:s') : null], ['id' => $id]);
             $this->log->write($id, $job->triggered_by, 'error', 'job_error', null, null, $job->kind, $e->getMessage());
         }
 
@@ -320,7 +340,7 @@ final class Jobs
     {
         $ids = array_map(fn (array $operation): ?string => is_string($operation['id']) && $operation['id'] !== '' ? $operation['id'] : null, $operations);
         $listed = array_flip(array_filter($ids));
-        $times = array_filter(array_map(fn (array $operation) => Schema::updatedAt($operation['data']), $operations));
+        $times = array_filter(array_map(fn (array $operation) => Schema::updatedAt($operation['data']['updated_at'] ?? null), $operations));
         $newest = $times ? max($times)->format(DATE_RFC3339) : null;
         $held = PostTypes::sourceIds(Schema::TYPES[$type]);
         $missing = array_values(array_filter($held, fn (string $id): bool => !isset($listed[$id])));
@@ -349,6 +369,14 @@ final class Jobs
         return $results;
     }
 
+    /**
+     * A stored UTC time ('2026-10-15 01:30:00') as ISO 8601 ('2026-10-15T01:30:00Z').
+     */
+    private static function iso(string $utc): string
+    {
+        return str_replace(' ', 'T', $utc) . 'Z';
+    }
+
     private function describe(object $row): array
     {
         return [
@@ -361,8 +389,8 @@ final class Jobs
             'done' => (int) $row->cursor_at,
             'results' => json_decode((string) $row->results, true) ?: [],
             'error' => $row->error,
-            'created_at' => $row->created_at,
-            'finished_at' => $row->finished_at,
+            'created_at' => self::iso($row->created_at),
+            'finished_at' => $row->finished_at ? self::iso($row->finished_at) : null,
         ];
     }
 }

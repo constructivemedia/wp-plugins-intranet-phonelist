@@ -2,6 +2,7 @@
 
 namespace ConstructiveMedia\IntranetPhonelist\Cli;
 
+use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Oracle\Adapter;
 use Throwable;
 use WP_CLI;
@@ -31,14 +32,13 @@ final class OracleImportCommand
     {
         $runId = wp_generate_uuid4();
         try {
-            $counts = $this->adapter->run($options['staff'] ?? null, $runId, 'oracle', fn (string $step) => WP_CLI::log($step));
+            $results = $this->adapter->run($options['staff'] ?? null, $runId, 'oracle', fn (string $step) => WP_CLI::log($step));
         } catch (Throwable $e) {
             WP_CLI::error($e->getMessage());
         }
 
-        foreach ($counts as $type => $results) {
-            ksort($results);
-            WP_CLI::log(sprintf('%s: %s', ucfirst($type), implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($results), $results))));
+        foreach ($results as $type => $typeResults) {
+            WP_CLI::log(ucfirst($type) . ': ' . Jobs::summary($typeResults));
         }
         WP_CLI::success("Imported (job $runId in the log).");
     }

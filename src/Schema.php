@@ -19,8 +19,11 @@ final class Schema
     /** Never exposed to unsigned reads or written to the log. */
     public const PRIVATE = ['date_of_birth', 'home_phone'];
 
-    /** Staff with these statuses stay on the phone list; any other status deletes them. */
-    public const KEPT_STATUSES = ['active'];
+    /**
+     * Every status a staff member can have, and whether they stay on the phone list. An inactive person is removed;
+     * any other value is refused (422), so an unexpected status can never remove anyone.
+     */
+    public const STATUSES = ['active' => true, 'inactive' => false];
 
     private const ID_LENGTH = 64;
     private const STRING_LENGTH = 1000;
@@ -100,7 +103,7 @@ final class Schema
         if (!is_string($id) || trim($id) === '' || strlen($id) > self::ID_LENGTH) {
             $error('id', 'Required: a string of 1 to ' . self::ID_LENGTH . ' characters.');
         }
-        if (self::updatedAt($input) === null) {
+        if (self::updatedAt($input['updated_at'] ?? null) === null) {
             $error('updated_at', 'Required: an ISO 8601 date and time with a timezone offset, e.g. 2026-10-15T09:30:00+08:00.');
         }
 
@@ -127,7 +130,11 @@ final class Schema
                 $error($field, $message);
                 continue;
             }
-            if ($config['kind'] === 'phone' && PhoneNumbers::available() && PhoneNumbers::format($stored) === null) {
+            if ($field === 'status' && !isset(self::STATUSES[$stored])) {
+                $error($field, 'Must be one of: ' . implode(', ', array_keys(self::STATUSES)) . '.');
+                continue;
+            }
+            if ($config['kind'] === 'phone' && PhoneNumbers::format($stored) === null) {
                 $warnings[] = ['field' => $field, 'message' => 'Not a phone number we could read; kept as sent.'];
             }
             $data[$field] = $stored;
@@ -137,26 +144,32 @@ final class Schema
     }
 
     /**
-     * The record's 'updated_at', or null if it's missing or not ISO 8601 with an offset ('Z' counts).
+     * An updated_at value as a date, or null if it isn't 'YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM)'.
+     * Fractions beyond microseconds (e.g. .NET's 7 digits) are cut to 6.
      */
-    public static function updatedAt(array $input): ?DateTimeImmutable
+    public static function updatedAt(mixed $value): ?DateTimeImmutable
     {
-        $value = $input['updated_at'] ?? null;
-        if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/', $value)) {
+        if (!is_string($value) || !preg_match('/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/', $value, $match)) {
             return null;
         }
-        $date = DateTimeImmutable::createFromFormat(str_contains($value, '.') ? 'Y-m-d\TH:i:s.uP' : DATE_RFC3339, $value);
+        $date = DateTimeImmutable::createFromFormat('Y-m-d\TH:i:s.uP', $match[1] . '.' . str_pad(substr($match[2], 0, 6), 6, '0') . $match[3]);
         $warnings = DateTimeImmutable::getLastErrors();
 
         return $date && !($warnings && $warnings['warning_count']) ? $date : null;
     }
 
     /**
-     * Whether a staff member with this status stays on the phone list.
+     * A post's stored values for every field of $type ('' read back as null; the title for title fields).
      */
-    public static function keeps(?string $status): bool
+    public static function stored(string $type, int $postId): array
     {
-        return in_array($status, self::KEPT_STATUSES, true);
+        $values = [];
+        foreach (self::fields($type) as $name => $config) {
+            $value = empty($config['title']) ? get_post_meta($postId, $name, true) : get_post_field('post_title', $postId, 'raw');
+            $values[$name] = $value === '' || $value === false ? null : (string) $value;
+        }
+
+        return $values;
     }
 
     /**
@@ -177,7 +190,7 @@ final class Schema
         return match ($kind) {
             'email' => filter_var($value, FILTER_VALIDATE_EMAIL) ? [$value, null] : [null, 'Not a valid email address.'],
             'url' => filter_var($value, FILTER_VALIDATE_URL) && preg_match('#^https?://#i', $value) ? [$value, null] : [null, 'Must be an http or https URL.'],
-            'phone' => [(PhoneNumbers::available() ? PhoneNumbers::format($value) : null) ?? $value, null],
+            'phone' => [PhoneNumbers::format($value) ?? $value, null],
             'date' => self::date($value),
             default => [$value, null],
         };

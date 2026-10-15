@@ -80,7 +80,7 @@ try {
     assert($in->patch('staff', 'test-404', ['updated_at' => $t2], 'test-run', 'api')->status === 404);
     assert($in->put('staff', 'test-1', ['id' => 'other'] + $jane + ['updated_at' => $t2], 'test-run', 'api')->status === 422);
     assert($in->put('staff', 'test-1', ['last_name' => ''] + $jane + ['updated_at' => $t2], 'test-run', 'api')->errors[0]['field'] === 'last_name');
-    $terminated = $in->put('staff', 'test-2', ['status' => 'terminated'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $terminated = $in->put('staff', 'test-2', ['status' => 'inactive'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     assert($terminated->result === 'deleted' && $terminated->status === 200 && $in->postId('staff', 'test-2') === 0);
     assert($in->put('divisions', 'test-D', ['name' => 'Test Division', 'updated_at' => $t1], 'test-run', 'api')->status === 201);
     assert(get_post_field('post_title', $in->postId('divisions', 'test-D'), 'raw') === 'Test Division');
@@ -95,7 +95,13 @@ try {
     assert($deleted->result === 'deleted' && $deleted->status === 204 && $in->postId('staff', 'test-1') === 0);
     assert($in->delete('staff', 'test-1', $t2, 'test-run', 'api')->status === 204);
     assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);       // a deleted record stays deleted for older pushes
-    assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t2], 'test-run', 'api')->result === 'created');  // ...but a newer one brings it back
+    assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t2], 'test-run', 'api')->status === 409);       // ...and for one at the same time: a delete wins ties
+    $in->delete('staff', 'test-gone', $t2, 'test-run', 'api');                                                       // never held: still remembered
+    assert($in->put('staff', 'test-gone', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);
+    $in->put('staff', 'test-left', ['status' => 'inactive'] + $jane + ['updated_at' => $t2], 'test-run', 'api'); // a leaver we never held: remembered too
+    assert($in->put('staff', 'test-left', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);
+    $t3 = '2026-10-15T11:00:00+08:00';
+    assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t3], 'test-run', 'api')->result === 'created');  // ...but a newer one brings it back
     assert($in->apply(['op' => 'delete', 'type' => 'staff', 'id' => 'test-1', 'data' => []], 'test-run', 'api')->errors[0]['field'] === 'updated_at');
     assert($in->postId('staff', 'test-1') > 0);
     assert($in->apply(['op' => 'put', 'type' => 'nope', 'id' => 'test-x', 'data' => []], 'test-run', 'api')->status === 422);
@@ -105,6 +111,14 @@ try {
     assert($in->put('staff', 'test-\\slash', ['position' => 'Estimator\\Supervisor'] + $jane + ['updated_at' => $t1], 'test-run', 'api')->result === 'created');
     assert(get_post_meta($in->postId('staff', 'test-\\slash'), 'position', true) === 'Estimator\\Supervisor');
     assert($in->put('staff', 'test-\\slash', ['position' => 'Estimator\\Supervisor'] + $jane + ['updated_at' => $t1], 'test-run', 'api')->result === 'unchanged');
+
+    // '&' in names is kept as '&', not escaped, whoever runs the write (API and cron run with no user).
+    $user = get_current_user_id();
+    wp_set_current_user(0);
+    $in->put('divisions', 'test-amp', ['name' => 'Test Building & Construction', 'updated_at' => $t1], 'test-run', 'api');
+    wp_set_current_user($user);
+    assert(get_post_field('post_title', $in->postId('divisions', 'test-amp'), 'raw') === 'Test Building & Construction');
+    assert($in->patch('divisions', 'test-amp', ['updated_at' => $t2], 'test-run', 'api')->result === 'unchanged');
 
     // Unreadable phone numbers are kept as sent and logged as a warning; an over-long label doesn't lose the log row.
     $in->put('staff', 'test-phone', ['mobile' => '0894647800 - Bunbury', 'last_name' => str_repeat('Long', 100)] + $jane + ['updated_at' => $t1], 'test-run', 'api');
@@ -136,7 +150,7 @@ try {
     assert($link($s1, 'manager') === 0);                                                      // deleted manager unlinked
     $in->delete('divisions', 'test-RD', $t2, 'test-run', 'api');
     assert($link($s1, 'division') === 0 && $link($s1, 'company') === 0);
-    $in->put('divisions', 'test-RD', ['name' => 'Test Relations Division', 'updated_at' => $t2], 'test-run', 'api');
+    $in->put('divisions', 'test-RD', ['name' => 'Test Relations Division', 'updated_at' => $t3], 'test-run', 'api');
     assert($link($s1, 'division') === $in->postId('divisions', 'test-RD'));                   // re-added: staff waiting on it are linked
     update_post_meta($s1, 'division', 0);
     Plugin::relations()->relinkAll();
@@ -158,6 +172,8 @@ try {
     $failed = $withPhotos->patch('staff', 'test-p1', ['photo_url' => 'https://127.0.0.1:1/x.jpg', 'updated_at' => $t2], 'test-run', 'api');
     assert($failed->result === 'updated' && !has_post_thumbnail($p1) && $failed->warnings[0]['field'] === 'photo_url');
     assert(is_string($photos->afterWrite($p1, ['photo_url' => 'https://127.0.0.1:1/x.jpg'], false)));
+    $retried = $withPhotos->patch('staff', 'test-p1', ['updated_at' => $t2], 'test-run', 'api');                   // same data: the failed photo is tried again
+    assert($retried->result === 'unchanged' && ($retried->warnings[0]['field'] ?? null) === 'photo_url');
     assert($photos->afterWrite($p1, ['photo_url' => null], false) === null);
     array_map('unlink', glob("$folder/*"));
     rmdir($folder);
@@ -224,6 +240,11 @@ try {
     $wpdb->update($wpdb->prefix . 'iphl_jobs', ['status' => 'failed', 'attempts' => 3], ['id' => $job3['id']]);
     assert($jobs->process($job3['id']) === true && $jobs->get($job3['id'])['status'] === 'done' && $in->postId('staff', 'test-b3') > 0);
     assert($jobs->process($job3['id']) === false);                                                 // done jobs aren't re-run
+    $job4 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b4', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
+    $wpdb->update($wpdb->prefix . 'iphl_jobs', ['attempts' => 3], ['id' => $job4['id']]);
+    $jobs->sweep();                                                                                  // gives up: 4th attempt
+    $gaveUp = $jobs->get($job4['id']);
+    assert($gaveUp['status'] === 'failed' && $gaveUp['finished_at'] !== null && str_ends_with($gaveUp['created_at'], 'Z'));
 
     // A job that can't be stored is an error, never a silent acknowledgement.
     $refused = false;

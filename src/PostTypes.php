@@ -54,6 +54,12 @@ final class PostTypes
     public const UPDATED_AT = '_' . self::PREFIX . 'updated_at';
     public const SOURCE_HASH = '_' . self::PREFIX . 'source_hash';
 
+    /** Read-only record details on every pushed post, shown from the post meta the ingest writes. */
+    private const RECORD_FIELDS = [
+        self::SOURCE_ID => ['label' => 'Data Hub ID', 'kind' => 'string', 'tab' => 'Record', 'width' => 50],
+        self::UPDATED_AT => ['label' => 'Updated At', 'kind' => 'string', 'tab' => 'Record', 'width' => 50],
+    ];
+
     /** Who can see and manage Phonelist in the admin. */
     public const CAPABILITY = 'manage_options';
 
@@ -90,22 +96,17 @@ final class PostTypes
         ));
     }
 
+    /**
+     * ACF field key: 'field_iphl_staff_first_name'. Stored against every post, so kept stable.
+     */
     public static function fieldKey(string $postType, string $field): string
     {
-        return 'field_iphl_' . self::shortName($postType) . '_' . $field;
+        return "field_{$postType}_$field";
     }
 
     public static function linkKey(string $name): string
     {
-        return 'field_iphl_staff_link_' . $name;
-    }
-
-    /**
-     * 'iphl_staff' → 'staff', for ACF keys (already prefixed, and stored against every post, so kept stable).
-     */
-    private static function shortName(string $postType): string
-    {
-        return substr($postType, strlen(self::PREFIX));
+        return self::fieldKey(self::STAFF, "link_$name");
     }
 
     /**
@@ -186,7 +187,7 @@ final class PostTypes
         foreach (Schema::TYPES as $type => $postType) {
             $fields = [];
             $tab = null;
-            foreach ([...array_filter(Schema::fields($type), fn (array $config): bool => empty($config['title'])), ...self::recordFields()] as $name => $config) {
+            foreach ([...array_filter(Schema::fields($type), fn (array $config): bool => empty($config['title'])), ...self::RECORD_FIELDS] as $name => $config) {
                 if ($config['tab'] !== $tab) {
                     $tab = $config['tab'];
                     $fields[] = ['key' => self::fieldKey($postType, 'tab_' . sanitize_key($tab)), 'label' => $tab, 'type' => 'tab'];
@@ -206,7 +207,7 @@ final class PostTypes
             }
 
             acf_add_local_field_group([
-                'key' => 'group_iphl_' . self::shortName($postType),
+                'key' => "group_$postType",
                 'title' => self::LABELS[$postType][0] . ' Details',
                 'fields' => $fields,
                 'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => $postType]]],
@@ -217,7 +218,7 @@ final class PostTypes
             'key' => 'group_iphl_division_company',
             'title' => 'Company',
             'fields' => [[
-                'key' => 'field_iphl_division_company',
+                'key' => self::fieldKey(self::DIVISION, 'company'),
                 'name' => 'company',
                 'label' => 'Company',
                 'type' => 'post_object',
@@ -234,7 +235,7 @@ final class PostTypes
             'key' => 'group_iphl_staff_club',
             'title' => 'JWH Club',
             'fields' => [[
-                'key' => 'field_iphl_staff_club',
+                'key' => self::fieldKey(self::STAFF, 'club'),
                 'name' => 'club',
                 'label' => 'Club',
                 'type' => 'taxonomy',
@@ -286,17 +287,6 @@ final class PostTypes
     }
 
     /**
-     * Read-only record details, shown from the post meta the ingest writes.
-     */
-    private static function recordFields(): array
-    {
-        return [
-            self::SOURCE_ID => ['label' => 'Data Hub ID', 'kind' => 'string', 'tab' => 'Record', 'width' => 50],
-            self::UPDATED_AT => ['label' => 'Updated At', 'kind' => 'string', 'tab' => 'Record', 'width' => 50],
-        ];
-    }
-
-    /**
      * Write a pushed value the way ACF stores it (value + field-key reference), bypassing ACF's save path,
      * which lock() closes to everyone else.
      */
@@ -314,7 +304,7 @@ final class PostTypes
     {
         $locked = [];
         foreach (Schema::TYPES as $type => $postType) {
-            foreach ([...array_keys(Schema::fields($type)), ...array_keys(self::recordFields())] as $name) {
+            foreach ([...array_keys(Schema::fields($type)), ...array_keys(self::RECORD_FIELDS)] as $name) {
                 $locked[self::fieldKey($postType, $name)] = $name;
             }
         }

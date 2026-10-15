@@ -4,11 +4,15 @@ namespace ConstructiveMedia\IntranetPhonelist\Oracle;
 
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
+use ConstructiveMedia\IntranetPhonelist\Schema;
 use DateTimeImmutable;
+use RuntimeException;
 
 /**
- * Development only: reads Oracle's PHONE_LIST_INTRANET and DIVISIONS and pushes them through the same ingest code
- * Data Hub uses, as contract records. Oracle's quirks (two-digit years, 'y' flags, 'N/A', capitals) are dealt with here.
+ * Development only: reads Oracle's PHONE_LIST_INTRANET and DIVISIONS (read-only: SELECTs on those two tables, nothing
+ * else) and pushes them through the same ingest code Data Hub uses, as contract records. Oracle's quirks (two-digit
+ * years, 'y' flags, 'N/A', capitals) are dealt with here. Unavailable unless the three Oracle constants are set;
+ * production leaves them blank.
  */
 final class Adapter
 {
@@ -36,20 +40,28 @@ final class Adapter
     /** Kept in capitals by prettyName(). */
     private const ACRONYMS = ['JWH', 'IT', 'GSH', 'W.A.'];
 
-    public function __construct(private readonly Source $source, private readonly Ingestor $ingestor, private readonly Jobs $jobs)
+    private const CONSTANTS = ['INTRANET_PHONELIST_ORACLE_DSN', 'INTRANET_PHONELIST_ORACLE_USER', 'INTRANET_PHONELIST_ORACLE_PASSWORD'];
+
+    public function __construct(private readonly Ingestor $ingestor, private readonly Jobs $jobs)
     {
     }
 
-    public function configured(): bool
+    public static function configured(): bool
     {
-        return $this->source->configured();
+        foreach (self::CONSTANTS as $name) {
+            if (!defined($name) || (string) constant($name) === '') {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**
      * Import everything (divisions, then staff, as snapshots), or one staff member by Oracle ID.
      *
      * @param callable(string): void $progress
-     * @return array<string, array<string, int>> Type => result => count.
+     * @return array<string, array<array>> Type => a result per record (see Jobs::summary()).
      */
     public function run(?string $staffId, string $runId, string $trigger, callable $progress): array
     {
@@ -57,7 +69,7 @@ final class Adapter
         $today = new DateTimeImmutable('today', wp_timezone());
 
         $progress('Reading Oracle…');
-        $staffRows = $this->source->fetch(self::STAFF_TABLE, self::STAFF_COLUMNS);
+        $staffRows = self::fetch(self::STAFF_TABLE, self::STAFF_COLUMNS);
         $byPosition = [];
         foreach ($staffRows as $row) {
             if (trim($row['POSITION_NO']) !== '') {
@@ -68,16 +80,13 @@ final class Adapter
 
         if ($staffId !== null) {
             $record = current(array_filter($staff, fn (array $record): bool => $record['id'] === $staffId));
-            if (!$record) {
-                return ['staff' => ['not_found' => 1]];
-            }
-            return ['staff' => [$this->ingestor->put('staff', $staffId, $record, $runId, $trigger)->result => 1]];
+            return ['staff' => [$record ? $this->ingestor->put('staff', $staffId, $record, $runId, $trigger)->toArray() : ['result' => 'not_found']]];
         }
 
-        // Only divisions someone current works in.
-        $staffed = array_flip(array_column(array_filter($staff, fn (array $record): bool => $record['status'] === 'active'), 'division_id'));
+        // Only divisions someone on the phone list works in.
+        $staffed = array_flip(array_column(array_filter($staff, fn (array $record): bool => Schema::STATUSES[$record['status']]), 'division_id'));
         $divisions = array_values(array_filter(
-            array_map(fn (array $row): array => self::division($row, $updatedAt), $this->source->fetch(self::DIVISION_TABLE, self::DIVISION_COLUMNS)),
+            array_map(fn (array $row): array => self::division($row, $updatedAt), self::fetch(self::DIVISION_TABLE, self::DIVISION_COLUMNS)),
             fn (array $division): bool => isset($staffed[$division['id']]),
         ));
 
@@ -85,17 +94,44 @@ final class Adapter
         $mapped = fn (string $name, string $id): string => self::companyFor($id) ?? $name;
         add_filter('intranet_phonelist_new_division_company', $mapped, 10, 2);
         try {
-            $counts = [];
+            $results = [];
             foreach (['divisions' => $divisions, 'staff' => $staff] as $type => $records) {
                 $progress(sprintf('Importing %d %s…', count($records), $type));
-                $results = $this->jobs->applySnapshot($type, $records, $runId, $trigger);
-                $counts[$type] = array_count_values(array_column($results, 'result'));
+                $results[$type] = $this->jobs->applySnapshot($type, $records, $runId, $trigger);
             }
         } finally {
             remove_filter('intranet_phonelist_new_division_company', $mapped, 10);
         }
 
-        return $counts;
+        return $results;
+    }
+
+    /**
+     * SELECT the given columns from a table (both from the constants above, never user input). Throws on any failure.
+     *
+     * @return array<array<string, string>>
+     */
+    private static function fetch(string $table, array $columns): array
+    {
+        if (!function_exists('oci_connect')) {
+            throw new RuntimeException('The oci8 PHP extension is not loaded.');
+        }
+        [$dsn, $user, $password] = array_map(fn (string $name): string => defined($name) ? (string) constant($name) : '', self::CONSTANTS);
+        $connection = @oci_connect($user, $password, $dsn, 'AL32UTF8'); // Reused within a request.
+        if (!$connection) {
+            throw new RuntimeException('Oracle connection failed: ' . (oci_error()['message'] ?? 'unknown error'));
+        }
+
+        // Session-only (writes nothing): real DATE columns (e.g. ON_LEAVE) come back as Ymd, full year, no parsing.
+        oci_execute(oci_parse($connection, "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYYMMDD'"));
+        $statement = oci_parse($connection, 'SELECT ' . implode(', ', $columns) . " FROM $table");
+        if (!$statement || !@oci_execute($statement, OCI_DEFAULT)) {
+            throw new RuntimeException("Oracle query on $table failed: " . (oci_error($statement ?: $connection)['message'] ?? 'unknown error'));
+        }
+        $rows = [];
+        oci_fetch_all($statement, $rows, 0, -1, OCI_FETCHSTATEMENT_BY_ROW | OCI_ASSOC | OCI_RETURN_NULLS);
+
+        return array_map(fn (array $row): array => array_map(fn ($value): string => (string) $value, $row), $rows);
     }
 
     /**

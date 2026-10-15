@@ -276,7 +276,7 @@ components:
       in: header
       name: X-Phonelist-Signature
       description: |
-        `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<METHOD>.<path>.<raw request body>" keyed with the shared secret>`,
+        `t=<unix seconds>,v1=<lowercase hex HMAC-SHA256 of "<t>.<METHOD>.<path>.<raw request body>" keyed with the shared secret>`,
         where <path> is the path and query string exactly as requested (e.g. /wp-json/phonelist/v2/staff/10423).
         With no body, the signed string ends with the final ".". `t` must be within 300 seconds of our clock.
     WordPressUser:
@@ -350,7 +350,7 @@ components:
     UpdatedAt:
       type: string
       format: date-time
-      description: ISO 8601 with a timezone offset (or Z), e.g. 2026-10-15T09:30:00+08:00.
+      description: 'YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM), e.g. 2026-10-15T09:30:00+08:00. Fractions beyond 6 digits are cut to 6.'
     Date:
       type: [string, 'null']
       format: date
@@ -411,8 +411,8 @@ components:
         reports_to: { $ref: '#/components/schemas/Text', description: "The manager's staff id." }
         status:
           type: string
-          description: '`active` stays on the phone list; any other value removes the person. The list of values is being finalised.'
-          examples: [active, terminated]
+          description: '`active` stays on the phone list; `inactive` removes the person (as a DELETE would). Anything else is refused with 422.'
+          enum: [active, inactive]
         start_date: { $ref: '#/components/schemas/Date' }
         on_leave_until: { $ref: '#/components/schemas/Date' }
         date_of_birth: { $ref: '#/components/schemas/Date', description: Private. }
@@ -440,8 +440,9 @@ components:
         total: { type: integer }
         done: { type: integer }
         error: { type: [string, 'null'] }
-        created_at: { type: string, description: UTC. }
-        finished_at: { type: [string, 'null'], description: UTC. }
+        triggered_by: { type: string, enum: [api, manual, oracle] }
+        created_at: { type: string, format: date-time, description: 'UTC, e.g. 2026-10-15T01:30:00Z.' }
+        finished_at: { type: [string, 'null'], format: date-time }
         results:
           type: array
           items:

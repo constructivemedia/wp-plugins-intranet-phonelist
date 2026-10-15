@@ -93,10 +93,17 @@ assert($patch['errors'] === [] && $patch['data'] === ['email' => null]);    // p
 
 assert(Schema::validate('divisions', ['id' => 'JWH', 'updated_at' => '2026-10-15T09:30:00Z'], false)['errors'][0]['field'] === 'name');
 assert(Schema::validate('staff', ['updated_at' => '2026-10-15T09:30:00Z'], true)['errors'][0]['field'] === 'id');
-assert(Schema::keeps('active') && !Schema::keeps('terminated') && !Schema::keeps(null));
+// Status is a fixed list: anything else is refused, never treated as a leaver.
+$status = fn (mixed $value): array => Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00Z', 'first_name' => 'A', 'last_name' => 'B', 'status' => $value], false);
+assert($status('active')['errors'] === [] && $status('inactive')['errors'] === []);
+foreach (['Active', 'terminated', 'A', 1] as $unknown) {
+    assert($status($unknown)['errors'][0]['field'] === 'status', "status $unknown");
+}
+assert(Schema::STATUSES === ['active' => true, 'inactive' => false]);
 assert(Schema::validate('staff', ['id' => 'S1', 'updated_at' => '2026-10-15T09:30:00+08:00', 'first_name' => 'A', 'last_name' => 'B', 'status' => 'active', 'phone' => '12'], false)['data']['phone'] === '12'); // unreadable phone kept as sent
-assert(Schema::updatedAt(['updated_at' => '2026-10-15T09:30:00+08:00'])->format('U') === (new DateTimeImmutable('2026-10-15T01:30:00Z'))->format('U'));
-assert(Schema::updatedAt(['updated_at' => 'nope']) === null && Schema::updatedAt([]) === null);
+assert(Schema::updatedAt('2026-10-15T09:30:00+08:00')->format('U') === (new DateTimeImmutable('2026-10-15T01:30:00Z'))->format('U'));
+assert(Schema::updatedAt('nope') === null && Schema::updatedAt(null) === null && Schema::updatedAt(5) === null);
+assert(Schema::updatedAt('2026-10-15T09:30:00.1234567+08:00')?->format('Y-m-d H:i:s.u') === '2026-10-15 09:30:00.123456'); // .NET's 7-digit fractions
 
 // Editor layout: each tab's widths fill whole rows.
 foreach (array_keys(Schema::TYPES) as $type) {
