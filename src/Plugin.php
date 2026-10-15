@@ -22,6 +22,7 @@ final class Plugin
     public const DAILY_HOOK = 'iphl_daily';
 
     private static Ingestor $ingestor;
+    private static Relations $relations;
 
     /**
      * The one Ingestor, for the API, jobs, the Oracle import and tests/wp-check.php.
@@ -31,13 +32,20 @@ final class Plugin
         return self::$ingestor;
     }
 
+    public static function relations(): Relations
+    {
+        return self::$relations;
+    }
+
     public static function boot(string $pluginFile): void
     {
         global $wpdb;
 
         $log = new Log($wpdb);
         $log->maybeUpgrade();
-        self::$ingestor = new Ingestor($log, $wpdb);
+        self::$relations = new Relations($log, $wpdb);
+        self::$relations->register();
+        self::$ingestor = new Ingestor($log, $wpdb, self::$relations);
         $photos = Photos::fromConstants();
         $companies = new CompanyMap();
         $synchronizer = new Synchronizer(OracleSource::fromConstants(), $photos, $companies, $log, $wpdb);
@@ -49,13 +57,6 @@ final class Plugin
         add_action('acf/include_fields', [$postTypes, 'registerFields']);
         $postTypes->lock();
         (new StaffController())->register();
-
-        // A division's Company changed by hand: its staff's stored company follows straight away.
-        add_action('acf/save_post', function ($postId) use ($synchronizer): void {
-            if (is_numeric($postId) && get_post_type((int) $postId) === PostTypes::DIVISION) {
-                $synchronizer->relinkDivision((int) $postId);
-            }
-        }, 20);
 
         // Sync Now runs here, via WP-Cron, so the browser never waits on a long sync.
         add_action(Synchronizer::BACKGROUND_HOOK, function (int $userId = 0) use ($synchronizer): void {

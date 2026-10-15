@@ -22,7 +22,7 @@ $cleanUp = function () use ($wpdb, $logTable): void {
         }
         wp_delete_post((int) $id, true);
     }
-    $wpdb->query("DELETE FROM $logTable WHERE run_id LIKE 'test-%' OR source_id LIKE 'test-%'");
+    $wpdb->query("DELETE FROM $logTable WHERE run_id LIKE 'test-%' OR source_id LIKE 'test-%' OR label LIKE 'Test %'");
 };
 
 $cleanUp();
@@ -84,6 +84,36 @@ try {
     assert($in->delete('staff', 'test-1', $t2, 'test-run', 'api')->status === 204);
     assert($in->apply(['op' => 'put', 'type' => 'nope', 'id' => 'test-x', 'data' => []], 'test-run', 'api')->status === 422);
     assert($in->apply(['op' => 'put', 'type' => 'staff', 'id' => 'test-3', 'data' => $jane + ['updated_at' => $t1]], 'test-run', 'api')->result === 'created');
+
+    // Relations: linked on write, in any order; a new division gets a company named after it; a division save re-points its staff.
+    $link = fn (int $postId, string $name): int => (int) get_post_meta($postId, $name, true);
+    assert($in->put('staff', 'test-s1', $jane + ['division_id' => 'test-RD', 'reports_to' => 'test-s2', 'updated_at' => $t1], 'test-run', 'api')->result === 'created');
+    $s1 = $in->postId('staff', 'test-s1');
+    assert($link($s1, 'division') === 0 && $link($s1, 'manager') === 0);                       // neither exists yet
+    $in->put('divisions', 'test-RD', ['name' => 'Test Relations Division', 'updated_at' => $t1], 'test-run', 'api');
+    $d = $in->postId('divisions', 'test-RD');
+    $c = $link($d, 'company');
+    assert(get_post_field('post_title', $c, 'raw') === 'Test Relations Division');            // company named after it
+    assert($link($s1, 'division') === $d && $link($s1, 'company') === $c);
+    $in->put('staff', 'test-s2', ['first_name' => 'Boss'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    assert($link($s1, 'manager') === $in->postId('staff', 'test-s2'));                         // manager arrived later
+    $in->put('staff', 'test-s3', $jane + ['reports_to' => 'test-s3', 'updated_at' => $t1], 'test-run', 'api');
+    assert($link($in->postId('staff', 'test-s3'), 'manager') === 0);                           // never their own manager
+    $other = wp_insert_post(['post_type' => PostTypes::COMPANY, 'post_status' => 'publish', 'post_title' => 'Test Other Co']);
+    update_field('field_iphl_division_company', $other, $d);
+    Plugin::relations()->refreshDivision($d);
+    assert($link($s1, 'company') === $other);
+    $in->put('divisions', 'test-RD2', ['name' => 'Test Relations Division', 'updated_at' => $t1], 'test-run', 'api');
+    assert($link($in->postId('divisions', 'test-RD2'), 'company') === $c);                     // reuses by name, no duplicate
+    $in->delete('staff', 'test-s2', null, 'test-run', 'api');
+    assert($link($s1, 'manager') === 0);                                                      // deleted manager unlinked
+    $in->delete('divisions', 'test-RD', null, 'test-run', 'api');
+    assert($link($s1, 'division') === 0 && $link($s1, 'company') === 0);
+    $in->put('divisions', 'test-RD', ['name' => 'Test Relations Division', 'updated_at' => $t2], 'test-run', 'api');
+    assert($link($s1, 'division') === $in->postId('divisions', 'test-RD'));                   // re-added: staff waiting on it are linked
+    update_post_meta($s1, 'division', 0);
+    Plugin::relations()->relinkAll();
+    assert($link($s1, 'division') === $in->postId('divisions', 'test-RD'));
 } finally {
     $cleanUp();
 }
