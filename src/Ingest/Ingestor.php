@@ -20,6 +20,12 @@ final class Ingestor
 {
     /** Seconds to wait for another write to the same record to finish. */
     private const LOCK_TIMEOUT = 10;
+    /**
+     * Deleted records are remembered (option iphl_tomb_<hash>: their last updated_at) so an older push that arrives
+     * late can't bring them back. Kept for this many days.
+     */
+    private const TOMBSTONE_PREFIX = 'iphl_tomb_';
+    private const TOMBSTONE_DAYS = 90;
 
     public function __construct(
         private readonly Log $log,
@@ -67,7 +73,7 @@ final class Ingestor
             if ($time && $this->isOlder($postId, $time)) {
                 return [new Outcome('stale', 409, message: 'Older than the stored record (' . get_post_meta($postId, PostTypes::UPDATED_AT, true) . ').'), $title];
             }
-            $this->remove($type, $postId);
+            $this->remove($type, $id, $postId, $time?->format(DATE_RFC3339));
 
             return [new Outcome('deleted', 204), $title];
         });
@@ -92,6 +98,8 @@ final class Ingestor
         }
         if (!is_array($data)) {
             $errors[] = ['field' => 'data', 'message' => 'Must be an object.'];
+        } elseif (($op['op'] ?? null) === 'delete' && !isset($data['updated_at'])) {
+            $errors[] = ['field' => 'updated_at', 'message' => 'Required in data for a delete.'];
         }
         if ($errors) {
             return $this->finish(new Outcome('invalid', 422, errors: $errors), (string) ($op['type'] ?? ''), is_string($id) ? $id : '', '', $runId, $trigger);
@@ -137,6 +145,10 @@ final class Ingestor
             if (!$postId && $partial) {
                 return [new Outcome('not_found', 404, message: 'No record with this ID. Send the whole record with PUT to create it.'), ''];
             }
+            $deleted = $postId ? null : $this->tombstone($type, $id);
+            if ($deleted !== null && $time && $time < $deleted) {
+                return [new Outcome('stale', 409, message: 'Older than the deletion of this record (' . $deleted->format(DATE_RFC3339) . ').'), ''];
+            }
             if ($postId && $this->isOlder($postId, $time)) {
                 return [new Outcome('stale', 409, message: 'Older than the stored record (' . get_post_meta($postId, PostTypes::UPDATED_AT, true) . ').'), get_post_field('post_title', $postId, 'raw')];
             }
@@ -147,7 +159,7 @@ final class Ingestor
             if ($type === 'staff' && !Schema::keeps($new['status'] ?? null)) {
                 $title = $postId ? get_post_field('post_title', $postId, 'raw') : $this->title($type, $new);
                 if ($postId) {
-                    $this->remove($type, $postId);
+                    $this->remove($type, $id, $postId, $input['updated_at']);
                 }
 
                 return [new Outcome('deleted', 200, message: "Status '{$new['status']}' is not kept on the phone list."), $title];
@@ -168,6 +180,7 @@ final class Ingestor
                     return [new Outcome('error', 500, message: $postId->get_error_message()), $title];
                 }
                 update_post_meta($postId, PostTypes::SOURCE_ID, $id);
+                delete_option(self::tombstoneName($type, $id));
             } elseif (get_post_field('post_title', $postId, 'raw') !== $title) {
                 wp_update_post(wp_slash(['ID' => $postId, 'post_title' => $title]));
             }
@@ -223,14 +236,56 @@ final class Ingestor
         return $outcome;
     }
 
-    private function remove(string $type, int $postId): void
+    /**
+     * Delete a record, remembering it as deleted as of $updatedAt (else the time it was last updated).
+     */
+    private function remove(string $type, string $id, int $postId, ?string $updatedAt): void
     {
+        update_option(self::tombstoneName($type, $id), [
+            'type' => $type,
+            'id' => $id,
+            'updated_at' => $updatedAt ?? (string) get_post_meta($postId, PostTypes::UPDATED_AT, true),
+            'deleted_at' => time(),
+        ], false);
         $this->relations?->beforeDelete($type, $postId);
         $photo = (int) get_post_thumbnail_id($postId);
         if ($photo) {
             wp_delete_attachment($photo, true); // A leaver's photo goes with them.
         }
         wp_delete_post($postId, true);
+    }
+
+    /**
+     * When a deleted record was deleted (as of its updated_at), or null if it wasn't or that was too long ago.
+     */
+    private function tombstone(string $type, string $id): ?DateTimeImmutable
+    {
+        $tombstone = get_option(self::tombstoneName($type, $id));
+
+        return is_array($tombstone) && ($tombstone['deleted_at'] ?? 0) > time() - self::TOMBSTONE_DAYS * DAY_IN_SECONDS
+            ? Schema::updatedAt(['updated_at' => $tombstone['updated_at'] ?? null])
+            : null;
+    }
+
+    private static function tombstoneName(string $type, string $id): string
+    {
+        return self::TOMBSTONE_PREFIX . md5("$type:$id");
+    }
+
+    /**
+     * Forget deletions older than TOMBSTONE_DAYS. Returns how many.
+     */
+    public function pruneTombstones(): int
+    {
+        $pruned = 0;
+        foreach ($this->db->get_col($this->db->prepare("SELECT option_name FROM {$this->db->options} WHERE option_name LIKE %s", $this->db->esc_like(self::TOMBSTONE_PREFIX) . '%')) as $name) {
+            $tombstone = get_option($name);
+            if (!is_array($tombstone) || ($tombstone['deleted_at'] ?? 0) < time() - self::TOMBSTONE_DAYS * DAY_IN_SECONDS) {
+                $pruned += (int) delete_option($name);
+            }
+        }
+
+        return $pruned;
     }
 
     private function isOlder(int $postId, ?DateTimeImmutable $time): bool

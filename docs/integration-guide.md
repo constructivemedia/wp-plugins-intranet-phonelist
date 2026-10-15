@@ -7,7 +7,7 @@ Data Hub pushes companies, divisions and staff to the intranet phone list. This 
 ## The rules in brief
 
 1. **Records are identified by your ID.** `id` is the Data Hub ID of the company, division or staff member. We never return our own IDs, and we never match records by name.
-2. **Every record carries `updated_at`.** It's an ISO 8601 date and time with a timezone offset, for example `2026-10-15T09:30:00+08:00`. If you send something older than what we hold, we refuse it with `409`, so retries and out-of-order deliveries can't overwrite newer data.
+2. **Every record carries `updated_at`.** It's an ISO 8601 date and time with a timezone offset, for example `2026-10-15T09:30:00+08:00`. If you send something older than what we hold, or older than when we deleted the record, we refuse it with `409`. That way retries and out-of-order deliveries can't overwrite newer data or bring back someone who has left.
 3. **Every write is signed** with the shared secret (see Signing).
 4. **Send our format, not Oracle's:**
    - Dates are `YYYY-MM-DD`.
@@ -25,16 +25,22 @@ Send this header with every request:
 X-Phonelist-Signature: t=<unix seconds>,v1=<signature>
 ```
 
-- **`<signature>`:** the lowercase hex HMAC-SHA256 of `<t>.<raw body>`, keyed with the shared secret.
-- **The raw body:** the exact bytes you send. Don't re-encode the JSON after signing.
-- **Requests with no body** (a `GET`, or a `DELETE` using the query string): sign the empty string, `<t>.`.
+`<signature>` is the lowercase hex HMAC-SHA256, keyed with the shared secret, of:
+
+```
+<t>.<METHOD>.<path>.<raw body>
+```
+
+- **`<METHOD>`:** `PUT`, `PATCH`, `DELETE`, `POST` or `GET`.
+- **`<path>`:** the path and query string exactly as in the request URL. For example `/wp-json/phonelist/v2/staff/10423`, or `/wp-json/phonelist/v2/staff/10099?updated_at=2026-10-15T09:30:00%2B08:00`. Because the method and path are signed, a signature for one record can't be reused for another.
+- **`<raw body>`:** the exact bytes you send. Don't re-encode the JSON after signing. With no body, it's empty, so the string ends with the final `.`.
 - **Timing:** `t` must be within 5 minutes of our clock, so keep your servers on NTP.
 - **Failures:** a missing, malformed, expired or wrong signature gets `401`.
 
-All three examples below give the same header for `t = 1760000000`, the secret `example-secret` and the body `{"id":"10423"}`:
+All three examples below give the same header for `t = 1760000000`, the secret `example-secret`, `PUT /wp-json/phonelist/v2/staff/10423` and the body `{"id":"10423"}`:
 
 ```
-t=1760000000,v1=7b81f0859a8461fd35bfbd8a96181cde7660b65e4f8190b98ffe41c05a63c79c
+t=1760000000,v1=a46069269697906d9e15425513a80bd4c083a5902d748fdb9d73dc4d91a49fed
 ```
 
 Use it to check your implementation before connecting.
@@ -42,21 +48,21 @@ Use it to check your implementation before connecting.
 **PHP**
 ```php
 $t = time();
-$header = "t=$t,v1=" . hash_hmac('sha256', "$t.$body", $secret);
+$header = "t=$t,v1=" . hash_hmac('sha256', "$t.$method.$path.$body", $secret);
 ```
 
 **Python**
 ```python
 import hmac, hashlib, time
 t = int(time.time())
-header = f"t={t},v1=" + hmac.new(secret.encode(), f"{t}.{body}".encode(), hashlib.sha256).hexdigest()
+header = f"t={t},v1=" + hmac.new(secret.encode(), f"{t}.{method}.{path}.{body}".encode(), hashlib.sha256).hexdigest()
 ```
 
 **Shell (curl + openssl)**
 ```bash
-t=$(date +%s)
-sig=$(printf '%s' "$t.$body" | openssl dgst -sha256 -hmac "$secret" | sed 's/^.* //')
-curl -X PUT "$BASE/staff/10423" -H 'Content-Type: application/json' \
+t=$(date +%s); path=/wp-json/phonelist/v2/staff/10423
+sig=$(printf '%s' "$t.PUT.$path.$body" | openssl dgst -sha256 -hmac "$secret" | sed 's/^.* //')
+curl -X PUT "https://<intranet host>$path" -H 'Content-Type: application/json' \
      -H "X-Phonelist-Signature: t=$t,v1=$sig" --data-raw "$body"
 ```
 
@@ -110,6 +116,7 @@ Use this for up to 500 operations in one request, in any mix of types:
 ```
 
 - **Order:** operations run in the order sent.
+- **Deletes** must include `updated_at` in `data`.
 - **Failures:** each operation succeeds or fails on its own. An invalid operation doesn't stop the rest.
 - **References:** it doesn't matter whether a staff member arrives before their division or manager. Links are made once both exist.
 
@@ -123,7 +130,11 @@ Send every record of one type that should exist (up to 5,000):
 
 - **Each record** is upserted, as with PUT.
 - **Records we hold that aren't in the snapshot are deleted.** The one exception is a record updated after the snapshot's newest `updated_at`, which is kept.
-- **An empty snapshot is refused** (`422`), so a failed export can't wipe the phone list.
+- **Safeguards, so a failed or partial export can't wipe the phone list:**
+  - An empty snapshot is refused (`422`).
+  - If any record has no usable `id` (it must be a non-empty string, not a number), nothing is deleted.
+  - If the snapshot would delete more than 10 records **and** more than 10% of those we hold, nothing is deleted.
+  - In both of the last two cases, the job's results end with an `error` entry explaining why. To remove many records on purpose, send DELETEs.
 - **Recommended schedule:** send a snapshot of each type nightly, divisions first, then staff. It corrects anything a missed message left behind.
 
 ### Jobs and retries

@@ -81,6 +81,7 @@ final class Plugin
         // Daily housekeeping: expired log entries and finished jobs.
         add_action(self::DAILY_HOOK, [$log, 'prune']);
         add_action(self::DAILY_HOOK, [self::$jobs, 'prune']);
+        add_action(self::DAILY_HOOK, [self::$ingestor, 'pruneTombstones']);
         if (!wp_next_scheduled(self::DAILY_HOOK)) {
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
         }

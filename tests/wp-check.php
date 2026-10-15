@@ -27,6 +27,8 @@ $cleanUp = function () use ($wpdb, $logTable): void {
         wp_delete_post((int) $id, true);
     }
     $wpdb->query("DELETE FROM $logTable WHERE run_id LIKE 'test-%' OR source_id LIKE 'test-%' OR label LIKE 'Test %'");
+    $wpdb->query("DELETE FROM $wpdb->options WHERE option_name LIKE 'iphl\\_tomb\\_%' AND option_value LIKE '%\"test-%'");
+    wp_cache_flush();
     if (method_exists(Plugin::class, 'jobs')) {
         $jobsTable = $wpdb->prefix . 'iphl_jobs';
         $testJobs = $wpdb->get_col("SELECT id FROM $jobsTable WHERE idempotency_key LIKE 'test-%' OR payload LIKE '%\"test-%'");
@@ -94,6 +96,10 @@ try {
     $deleted = $in->delete('staff', 'test-1', $t2, 'test-run', 'api');
     assert($deleted->result === 'deleted' && $deleted->status === 204 && $in->postId('staff', 'test-1') === 0);
     assert($in->delete('staff', 'test-1', $t2, 'test-run', 'api')->status === 204);
+    assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);       // a deleted record stays deleted for older pushes
+    assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t2], 'test-run', 'api')->result === 'created');  // ...but a newer one brings it back
+    assert($in->apply(['op' => 'delete', 'type' => 'staff', 'id' => 'test-1', 'data' => []], 'test-run', 'api')->errors[0]['field'] === 'updated_at');
+    assert($in->postId('staff', 'test-1') > 0);
     assert($in->apply(['op' => 'put', 'type' => 'nope', 'id' => 'test-x', 'data' => []], 'test-run', 'api')->status === 422);
     assert($in->apply(['op' => 'put', 'type' => 'staff', 'id' => 'test-3', 'data' => $jane + ['updated_at' => $t1]], 'test-run', 'api')->result === 'created');
 
@@ -198,6 +204,15 @@ try {
     $jobs->sweep();
     assert($jobs->get($job2['id'])['status'] === 'done' && $in->postId('staff', 'test-b2') > 0);
 
+    // A job that can't be stored is an error, never a silent acknowledgement.
+    $refused = false;
+    try {
+        $jobs->create(str_repeat('x', 50), null, [['op' => 'put']], null, 'api');
+    } catch (RuntimeException) {
+        $refused = true;
+    }
+    assert($refused);
+
     // Snapshot of one type deletes that type's records (with a Data Hub ID) missing from it. Companies here, so no real
     // records are at risk: locally only test companies have a Data Hub ID.
     $realWithIds = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts p JOIN $wpdb->postmeta m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s AND m.meta_value NOT LIKE 'test-%%'", PostTypes::COMPANY, PostTypes::SOURCE_ID));
@@ -209,6 +224,18 @@ try {
         assert(array_column($results, 'result') === ['unchanged', 'deleted']);
         assert($in->postId('companies', 'test-C1') > 0 && $in->postId('companies', 'test-C2') === 0);
         assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 1 === (int) $ours); // ours untouched
+
+        // A snapshot with unusable ids (numbers here) deletes nothing.
+        $results = $jobs->applySnapshot('companies', [['id' => 7, 'data' => ['id' => 7, 'name' => 'Test Seven', 'updated_at' => $t2]]], 'test-run', 'api');
+        assert($in->postId('companies', 'test-C1') > 0 && !in_array('deleted', array_column($results, 'result'), true));
+        assert(end($results)['result'] === 'error');
+
+        // A snapshot that would delete more than 10 records and 10% of those held deletes nothing.
+        for ($i = 2; $i <= 13; $i++) {
+            $in->put('companies', "test-C$i", ['name' => "Test Company $i", 'updated_at' => $t1], 'test-run', 'api');
+        }
+        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'data' => ['name' => 'Test Company One', 'updated_at' => $t2]]], 'test-run', 'api');
+        assert($in->postId('companies', 'test-C13') > 0 && end($results)['result'] === 'error');
     } else {
         echo "Skipped the snapshot deletion check: this site has companies with Data Hub IDs.\n";
     }

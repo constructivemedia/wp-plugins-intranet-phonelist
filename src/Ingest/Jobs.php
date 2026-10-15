@@ -5,6 +5,7 @@ namespace ConstructiveMedia\IntranetPhonelist\Ingest;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Relations;
 use ConstructiveMedia\IntranetPhonelist\Schema;
+use RuntimeException;
 use Throwable;
 use wpdb;
 
@@ -26,6 +27,9 @@ final class Jobs
     private const KEEP_DAYS = 30;
     /** A sweep stops starting jobs after this long, so it finishes inside a cron run. */
     private const SWEEP_SECONDS = 50;
+    /** A snapshot may delete up to this many missing records, or more if they are at most this share of those held. */
+    private const MAX_SNAPSHOT_DELETIONS = 10;
+    private const MAX_SNAPSHOT_DELETE_SHARE = 0.1;
 
     private const SCHEMA = '1';
     private const SCHEMA_OPTION = 'intranet_phonelist_jobs_schema';
@@ -99,7 +103,7 @@ final class Jobs
         }
 
         $id = wp_generate_uuid4();
-        $this->db->insert($this->table, [
+        $stored = $this->db->insert($this->table, [
             'id' => $id,
             'idempotency_key' => $idempotencyKey,
             'kind' => $kind,
@@ -111,6 +115,15 @@ final class Jobs
             'total' => count($items),
             'created_at' => gmdate('Y-m-d H:i:s'),
         ]);
+
+        if (!$stored) {
+            // The same idempotency key arriving twice at once: the other request stored it.
+            $existing = $idempotencyKey === null ? null : $this->db->get_row($this->db->prepare("SELECT id, status FROM {$this->table} WHERE idempotency_key = %s", $idempotencyKey));
+            if ($existing) {
+                return ['id' => $existing->id, 'status' => $existing->status, 'existing' => true];
+            }
+            throw new RuntimeException('The job could not be stored: ' . ($this->db->last_error ?: 'unknown database error'));
+        }
 
         return ['id' => $id, 'status' => 'queued', 'existing' => false];
     }
@@ -289,24 +302,40 @@ final class Jobs
     /**
      * After a snapshot's items: delete records of $type with a Data Hub ID the snapshot didn't list, as of its newest
      * updated_at (so a record changed since is kept), then recheck every staff link.
+     *
+     * Nothing is deleted when any item lacks a usable id, or when the deletions would exceed MAX_SNAPSHOT_DELETIONS
+     * and MAX_SNAPSHOT_DELETE_SHARE of the records held: a malformed or truncated snapshot can't empty the phone list.
      */
     private function finishSnapshot(string $type, array $items, string $runId, string $trigger): array
     {
-        $listed = array_flip(array_filter(array_map(fn ($item): ?string => is_string($item['id'] ?? null) ? $item['id'] : null, $items)));
+        $ids = array_map(fn ($item): ?string => is_string($item['id'] ?? null) && $item['id'] !== '' ? $item['id'] : null, $items);
+        $listed = array_flip(array_filter($ids));
         $times = array_filter(array_map(fn ($item) => Schema::updatedAt(is_array($item['data'] ?? null) ? $item['data'] : []), $items));
         $newest = $times ? max($times)->format(DATE_RFC3339) : null;
+        $held = $this->db->get_col($this->db->prepare(
+            "SELECT m.meta_value FROM {$this->db->posts} p JOIN {$this->db->postmeta} m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s",
+            Schema::TYPES[$type],
+            PostTypes::SOURCE_ID
+        ));
+        $missing = array_values(array_filter($held, fn (string $id): bool => !isset($listed[$id])));
+
+        $refused = match (true) {
+            in_array(null, $ids, true) => 'Some records have no usable id (a non-empty string), so nothing was deleted.',
+            $newest === null => 'No record has a valid updated_at, so nothing was deleted.',
+            count($missing) > self::MAX_SNAPSHOT_DELETIONS && count($missing) > count($held) * self::MAX_SNAPSHOT_DELETE_SHARE
+                => sprintf('The snapshot would delete %d of %d records, more than allowed at once, so nothing was deleted.', count($missing), count($held)),
+            default => null,
+        };
 
         $results = [];
-        if ($newest !== null) {
-            $held = $this->db->get_col($this->db->prepare(
-                "SELECT m.meta_value FROM {$this->db->posts} p JOIN {$this->db->postmeta} m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s",
-                Schema::TYPES[$type],
-                PostTypes::SOURCE_ID
-            ));
-            foreach ($held as $id) {
-                if (!isset($listed[$id])) {
-                    $results[] = ['id' => $id, 'type' => $type, 'op' => 'delete'] + $this->ingestor->delete($type, $id, $newest, $runId, $trigger)->toArray();
-                }
+        if ($refused !== null) {
+            if ($missing) {
+                $this->log->write($runId, $trigger, 'error', 'snapshot_refused', Schema::TYPES[$type], null, $type, $refused, ['would_delete' => count($missing)]);
+                $results[] = ['id' => null, 'type' => $type, 'op' => 'delete', 'result' => 'error', 'message' => $refused];
+            }
+        } else {
+            foreach ($missing as $id) {
+                $results[] = ['id' => $id, 'type' => $type, 'op' => 'delete'] + $this->ingestor->delete($type, $id, $newest, $runId, $trigger)->toArray();
             }
         }
         $this->relations->relinkAll();

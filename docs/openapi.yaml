@@ -146,6 +146,8 @@ paths:
         Every record of the type that should exist. Each record is upserted; records of this type that we hold with a
         Data Hub ID but that are not in the snapshot are deleted (unless they were updated after the snapshot's newest
         `updated_at`). Processed in the background: the reply is a job.
+        Nothing is deleted if any record lacks a string `id`, or if the deletions would exceed both 10 records and 10%
+        of those held; the job results then end with an `error` entry.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -273,8 +275,9 @@ components:
       in: header
       name: X-Phonelist-Signature
       description: |
-        `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw request body>" keyed with the shared secret>`.
-        For requests with no body, sign the empty string. `t` must be within 300 seconds of our clock.
+        `t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<METHOD>.<path>.<raw request body>" keyed with the shared secret>`,
+        where <path> is the path and query string exactly as requested (e.g. /wp-json/phonelist/v2/staff/10423).
+        With no body, the signed string ends with the final ".". `t` must be within 300 seconds of our clock.
     WordPressUser:
       type: http
       scheme: basic
@@ -419,7 +422,7 @@ components:
         id: { type: string, maxLength: 64 }
         data:
           type: object
-          description: The record (put), the changed fields (patch) or just updated_at (delete). Always includes updated_at.
+          description: The record (put), the changed fields (patch) or just updated_at (delete). Always includes updated_at; a delete without it is invalid.
 
     Job:
       type: object

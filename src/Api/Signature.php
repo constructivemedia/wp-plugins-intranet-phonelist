@@ -6,8 +6,11 @@ use WP_Error;
 use WP_REST_Request;
 
 /**
- * Signed requests: X-Phonelist-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<raw body>" with the shared secret>.
- * The secret is INTRANET_PHONELIST_API_SECRET. Local and development sites also accept unsigned requests.
+ * Signed requests: X-Phonelist-Signature: t=<unix seconds>,v1=<hex HMAC-SHA256 of "<t>.<METHOD>.<path>.<raw body>"
+ * with the shared secret>, where <path> is the path and query string exactly as requested
+ * (e.g. '/wp-json/phonelist/v2/staff/10423?updated_at=…'). Covering the method and path means a captured request
+ * can't be replayed against another record. The secret is INTRANET_PHONELIST_API_SECRET.
+ * Local and development sites also accept unsigned requests.
  */
 final class Signature
 {
@@ -15,15 +18,15 @@ final class Signature
     /** Seconds a signature stays valid either side of our clock, so a captured request can't be replayed later. */
     public const TOLERANCE = 300;
 
-    public static function sign(string $rawBody, string $secret, int $time): string
+    public static function sign(string $method, string $path, string $rawBody, string $secret, int $time): string
     {
-        return "t=$time,v1=" . hash_hmac('sha256', "$time.$rawBody", $secret);
+        return "t=$time,v1=" . self::hmac($time, $method, $path, $rawBody, $secret);
     }
 
     /**
      * Null when valid, else why not: 'missing', 'malformed', 'expired' or 'mismatch'.
      */
-    public static function verify(?string $header, string $rawBody, string $secret, int $now): ?string
+    public static function verify(?string $header, string $method, string $path, string $rawBody, string $secret, int $now): ?string
     {
         if ($header === null || trim($header) === '') {
             return 'missing';
@@ -35,7 +38,12 @@ final class Signature
             return 'expired';
         }
 
-        return hash_equals(hash_hmac('sha256', "$match[1].$rawBody", $secret), $match[2]) ? null : 'mismatch';
+        return hash_equals(self::hmac((int) $match[1], $method, $path, $rawBody, $secret), $match[2]) ? null : 'mismatch';
+    }
+
+    private static function hmac(int $time, string $method, string $path, string $rawBody, string $secret): string
+    {
+        return hash_hmac('sha256', $time . '.' . strtoupper($method) . ".$path.$rawBody", $secret);
     }
 
     /**
@@ -54,7 +62,9 @@ final class Signature
             return 'not_configured';
         }
 
-        return self::verify($header, $request->get_body(), $secret, time()) ?? 'valid';
+        $path = (string) wp_unslash($_SERVER['REQUEST_URI'] ?? ''); // As requested, including the query string.
+
+        return self::verify($header, $request->get_method(), $path, $request->get_body(), $secret, time()) ?? 'valid';
     }
 
     /**

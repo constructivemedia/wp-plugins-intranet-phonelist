@@ -6,6 +6,7 @@ use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Outcome;
+use RuntimeException;
 use WP_HTTP_Response;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -207,7 +208,11 @@ final class IngressController
     private function queue(WP_REST_Request $request, string $kind, ?string $type, array $items): WP_REST_Response
     {
         $key = $request->get_header('Idempotency-Key');
-        $job = $this->jobs->create($kind, $type, $items, $key === null || $key === '' ? null : substr($key, 0, 100), $this->trigger($request));
+        try {
+            $job = $this->jobs->create($kind, $type, $items, $key === null || $key === '' ? null : substr($key, 0, 100), $this->trigger($request));
+        } catch (RuntimeException $e) {
+            return Problem::response(503, 'Could not be queued', $e->getMessage() . ' Try again.');
+        }
         $this->runId = $job['id'];
         $url = rest_url(self::NAMESPACE . '/jobs/' . $job['id']);
 

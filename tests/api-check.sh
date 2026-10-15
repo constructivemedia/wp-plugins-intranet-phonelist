@@ -25,18 +25,20 @@ trap cleanup EXIT
 remove_records
 KEY="test-api-key-$(date +%s)"
 
-sign() { # body → header value
+sign() { # method, full path with query, body → header value
     local t; t=$(date +%s)
-    printf 't=%s,v1=%s' "$t" "$(printf '%s' "$t.$1" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
+    printf 't=%s,v1=%s' "$t" "$(printf '%s' "$t.$1.$2.$3" | openssl dgst -sha256 -hmac "$SECRET" | sed 's/^.* //')"
 }
 
-# request METHOD PATH BODY MODE(signed|unsigned|app|tampered) [extra curl args...] → prints status, keeps body in LAST_BODY
+# request METHOD PATH BODY MODE(signed|unsigned|app|tampered|other-record) [extra curl args...] → prints status
 request() {
     local method=$1 path=$2 body=$3 mode=$4; shift 4
+    local full="/wp-json/phonelist/v2$path"
     local args=(-sk -o /tmp/api-check-body -w '%{http_code}' -X "$method" -H 'Content-Type: application/json')
     case $mode in
-        signed) args+=(-H "X-Phonelist-Signature: $(sign "$body")") ;;
-        tampered) args+=(-H "X-Phonelist-Signature: $(sign "$body ")") ;;
+        signed) args+=(-H "X-Phonelist-Signature: $(sign "$method" "$full" "$body")") ;;
+        tampered) args+=(-H "X-Phonelist-Signature: $(sign "$method" "$full" "$body ")") ;;
+        other-record) args+=(-H "X-Phonelist-Signature: $(sign "$method" "${full}-other" "$body")") ;;
         app) args+=(-u "admin:$APP") ;;
     esac
     [ -n "$body" ] && args+=(--data-raw "$body")
@@ -69,6 +71,7 @@ has "problem details" '"status":409'
 expect "missing last_name is invalid" 422 "$(request PUT /staff/test-api-1 "{\"first_name\":\"Jane\",\"status\":\"active\",\"updated_at\":\"$T1\"}" signed)"
 has "field error names last_name" '"field":"last_name"'
 expect "tampered body is refused" 401 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T1\"}" tampered)"
+expect "a signature for another record is refused" 401 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T1\"}" other-record)"
 expect "unsigned on a local site is accepted" 200 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T1\"}" unsigned)"
 expect "not JSON is a bad request" 400 "$(request PUT /staff/test-api-1 'nope' signed)"
 expect "PATCH of an unknown id" 404 "$(request PATCH /staff/test-api-nope "{\"updated_at\":\"$T1\"}" signed)"
