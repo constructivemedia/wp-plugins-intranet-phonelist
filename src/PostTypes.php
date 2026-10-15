@@ -18,6 +18,16 @@ final class PostTypes
     public const DIVISION = self::PREFIX . 'division';
     public const STAFF = self::PREFIX . 'staff';
 
+    /**
+     * Links stored on each staff member by the sync (post IDs), worked out from synced fields:
+     * division from DIV_CODE, company from the division's Company, reports_to from REPORTS_TO_ID = the manager's POSITION_NO.
+     */
+    public const STAFF_LINKS = [
+        'division' => ['label' => 'Division', 'type' => self::DIVISION, 'multiple' => false],
+        'company' => ['label' => 'Company', 'type' => self::COMPANY, 'multiple' => false],
+        'reports_to' => ['label' => 'Reports To', 'type' => self::STAFF, 'multiple' => true],
+    ];
+
     /** HR fields kept out of the log: it records that they changed, never their values. */
     public const PRIVATE_COLUMNS = ['DOB', 'HOME_PHONE'];
 
@@ -223,5 +233,31 @@ final class PostTypes
             'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => self::DIVISION]]],
             'position' => 'side',
         ]);
+
+        // Staff links, stored by the sync so Admin Columns and queries can use them. Hidden in the editor
+        // (the Relationships box shows them) and disabled, so a manual save never overwrites them.
+        acf_add_local_field_group([
+            'key' => 'group_iphl_staff_links',
+            'title' => 'Links',
+            'style' => 'seamless',
+            'fields' => array_map(fn (string $name, array $link): array => [
+                'key' => self::linkKey($name),
+                'name' => $name,
+                'label' => $link['label'],
+                'type' => 'post_object',
+                'post_type' => [$link['type']],
+                'multiple' => (int) $link['multiple'],
+                'return_format' => 'id',
+                'allow_null' => 1,
+                'disabled' => 1,
+                'wrapper' => ['class' => 'hidden'],
+            ], array_keys(self::STAFF_LINKS), self::STAFF_LINKS),
+            'location' => [[['param' => 'post_type', 'operator' => '==', 'value' => self::STAFF]]],
+        ]);
+    }
+
+    public static function linkKey(string $name): string
+    {
+        return 'field_iphl_staff_link_' . $name;
     }
 }

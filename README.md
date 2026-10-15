@@ -63,6 +63,22 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
   - **The mapping wins** for the divisions it lists. Divisions not listed can still be set by hand on the division; any left without a company are flagged as a `no_company` warning.
   - **Companies are matched by name and never deleted.**
 
+## Staff links (for Admin Columns and queries)
+
+Each sync stores three links on every staff member as ACF fields, holding post IDs:
+
+| Field (meta key) | Links to | Worked out from |
+|---|---|---|
+| `division` | the division | `DIV_CODE` |
+| `company` | the company | the division's Company |
+| `reports_to` | the manager(s) | `REPORTS_TO_ID` = the manager's `POSITION_NO` (several people can share a position) |
+
+- **When they're written:** only changed links are written. A staff member's `company` follows straight away when a division's Company is changed by hand or through the mapping.
+- **In the editor:** the fields are hidden and read-only; the **Relationships** box shows them, plus direct reports, which is worked out live.
+- **Admin Columns Pro** lists them as ACF fields.
+- **Admin Columns (free):** add a **Custom Field** column with the meta key (`division`, `company` or `reports_to`) and the field type **Post**. It shows linked titles.
+- **In code:** `get_field('reports_to', $postId)` returns manager post IDs. Queries can filter on the meta keys.
+
 ## Staff photos
 
 Oracle has no photos, so they come from a folder of files named `first_last_divcode.jpg` (e.g. `jane_citizen_jwh.jpg`). Set the folder in `wp-config.php`:

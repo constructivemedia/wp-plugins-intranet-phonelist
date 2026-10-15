@@ -96,6 +96,7 @@ final class Synchronizer
             if ($full) {
                 $this->linkCompanies();
             }
+            $this->linkStaff($full ? null : array_filter([$this->existing(PostTypes::STAFF)[$staffId]['post_id'] ?? 0]));
             if ($this->photos->enabled()) {
                 $this->attachPhotos($rows[PostTypes::STAFF]);
             }
@@ -271,6 +272,61 @@ final class Synchronizer
     }
 
     /**
+     * Keep a division's staff pointing at the right company after its Company is changed by hand.
+     */
+    public function relinkDivision(int $divisionPostId): void
+    {
+        $code = (string) get_post_meta($divisionPostId, PostTypes::SOURCE_ID, true);
+        if ($code !== '') {
+            $this->linkStaff(get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'fields' => 'ids', 'meta_key' => 'div_code', 'meta_value' => $code]));
+        }
+    }
+
+    /**
+     * Store each staff member's division, company and manager(s) as ACF fields (PostTypes::STAFF_LINKS), so Admin Columns
+     * and queries can use them. Only changed links are written. Not logged: they follow from changes that already are.
+     *
+     * @param int[]|null $only Staff post IDs to update; null = everyone.
+     */
+    private function linkStaff(?array $only = null): void
+    {
+        $staff = array_column($this->existing(PostTypes::STAFF), 'post_id');
+        $divisions = array_map(fn (array $division): int => $division['post_id'], $this->existing(PostTypes::DIVISION));
+        update_meta_cache('post', [...$staff, ...array_values($divisions)]);
+
+        // Reports-to is position based: REPORTS_TO_ID is the manager's POSITION_NO.
+        $byPosition = [];
+        foreach ($staff as $postId) {
+            $position = trim((string) get_post_meta($postId, 'position_no', true));
+            if ($position !== '') {
+                $byPosition[$position][] = $postId;
+            }
+        }
+
+        $written = 0;
+        foreach ($only ?? $staff as $postId) {
+            $this->heartbeat();
+            $divisionId = $divisions[trim((string) get_post_meta($postId, 'div_code', true))] ?? 0;
+            $links = [
+                'division' => $divisionId ?: null,
+                'company' => $divisionId ? ((int) get_post_meta($divisionId, 'company', true) ?: null) : null,
+                'reports_to' => array_values(array_diff($byPosition[trim((string) get_post_meta($postId, 'reports_to_id', true))] ?? [], [$postId])),
+            ];
+            foreach ($links as $name => $value) {
+                $stored = get_post_meta($postId, $name, true);
+                $same = is_array($value)
+                    ? array_map('intval', (array) $stored) == $value
+                    : (int) $stored === (int) $value;
+                if (!$same) {
+                    update_field(PostTypes::linkKey($name), $value, $postId);
+                    $written++;
+                }
+            }
+        }
+        $this->debug('links', PostTypes::STAFF, ['checked' => count($only ?? $staff), 'written' => $written]);
+    }
+
+    /**
      * File name of a staff member's current photo ('' if none), from the fingerprint Photos stores.
      */
     private function photoFile(int $postId): string
@@ -320,6 +376,7 @@ final class Synchronizer
         $this->record('info', 'company_map', message: 'Company mapping saved.', context: ['map' => $this->companies->get()]);
         try {
             $this->linkCompanies();
+            $this->linkStaff(); // Staff companies follow their divisions.
         } finally {
             $this->flushPending();
             $this->unlock();
