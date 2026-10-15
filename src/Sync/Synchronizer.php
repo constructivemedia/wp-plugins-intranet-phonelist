@@ -2,6 +2,7 @@
 
 namespace ConstructiveMedia\IntranetPhonelist\Sync;
 
+use ConstructiveMediaIntranetPhonelistIngestPhoneNumbers;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use DateTimeImmutable;
 use RuntimeException;
