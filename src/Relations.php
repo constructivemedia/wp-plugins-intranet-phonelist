@@ -39,7 +39,9 @@ final class Relations
             }
         } elseif ($type === 'divisions') {
             if ($created && !(int) get_post_meta($postId, 'company', true)) {
-                PostTypes::store($postId, 'field_iphl_division_company', 'company', $this->companyFor(get_post_field('post_title', $postId, 'raw')));
+                // A company named after the division, unless 'intranet_phonelist_new_division_company' names another (the Oracle import does).
+                $name = (string) apply_filters('intranet_phonelist_new_division_company', get_post_field('post_title', $postId, 'raw'), $id);
+                PostTypes::store($postId, 'field_iphl_division_company', 'company', $this->companyFor($name));
             }
             foreach ($this->staffWhere('division_id', $id) as $staff) {
                 $this->linkStaff($staff);
@@ -66,7 +68,7 @@ final class Relations
             $this->log->write('', 'system', 'error', 'error', PostTypes::COMPANY, null, $name, $id->get_error_message());
             return 0;
         }
-        $this->log->write('', 'system', 'info', 'created', PostTypes::COMPANY, null, $name, "Named after the $name division.");
+        $this->log->write('', 'system', 'info', 'created', PostTypes::COMPANY, null, $name, 'Created for a new division.');
 
         return $id;
     }

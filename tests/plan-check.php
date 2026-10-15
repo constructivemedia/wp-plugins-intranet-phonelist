@@ -13,6 +13,7 @@ use ConstructiveMedia\IntranetPhonelist\PostTypes;
 use ConstructiveMedia\IntranetPhonelist\Schema;
 use ConstructiveMedia\IntranetPhonelist\Staff;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
+use ConstructiveMedia\IntranetPhonelist\Oracle\Adapter;
 
 // Division titles: title case, tidy brackets, known acronyms kept.
 foreach ([
@@ -24,7 +25,7 @@ foreach ([
     'ROOFSTYLE' => 'Roofstyle',
     'ITEM ITALIA' => 'Item Italia',
 ] as $raw => $pretty) {
-    assert(PostTypes::prettyName($raw) === $pretty, "$raw → " . PostTypes::prettyName($raw));
+    assert(Adapter::prettyName($raw) === $pretty, "$raw → " . Adapter::prettyName($raw));
 }
 
 // Club list import: level headings, description lines skipped, then name/company pairs; names compared loosely.
@@ -121,5 +122,28 @@ assert(Signature::verify('v1=abc', $body, $secret, $now) === 'malformed');
 assert(Problem::body(422, 'Invalid record', 'staff S1', [['field' => 'email', 'message' => 'Not a valid email address.']])
     === ['type' => 'about:blank#validation', 'title' => 'Invalid record', 'status' => 422, 'detail' => 'staff S1', 'errors' => [['field' => 'email', 'message' => 'Not a valid email address.']]]);
 assert(Problem::body(404, 'Not found') === ['type' => 'about:blank', 'title' => 'Not found', 'status' => 404, 'detail' => '']);
+
+// Oracle import (development only): Oracle rows → contract records.
+$oracleRow = ['ID' => '42', 'NAME_FIRST' => ' Jane ', 'NAME_LAST_CO' => 'Citizen', 'PREF_NAME' => '', 'E_STATUS' => 'E', 'PH_EXT' => '0892221111',
+    'REPORTS_TO_ID' => 'P9', 'POSITION_NO' => 'P1', 'DOB' => '05Sep85', 'START_DATE' => 'N/A', 'ON_LEAVE' => '20261101', 'HIDE_BIRTHDAY' => 'y', 'DIV_CODE' => 'JWH', 'EMAIL' => 'not an email']
+    + array_fill_keys(['MOBILE_NO', 'VOIP', 'HOME_PHONE', 'POSITION', 'JOB', 'JOB_TYPE', 'AWARD_CODE', 'TAG', 'TAG_DESCRIPTION', 'COMPANY_ID'], '');
+$today = new DateTimeImmutable('2026-10-13');
+$rec = Adapter::staff($oracleRow, ['P9' => '7', 'P1' => '42'], '2026-10-15T09:00:00+08:00', $today);
+assert($rec['id'] === '42' && $rec['first_name'] === 'Jane' && $rec['preferred_name'] === null && $rec['status'] === 'active' && $rec['email'] === null);
+assert($rec['reports_to'] === '7' && $rec['date_of_birth'] === '1985-09-05' && $rec['start_date'] === null && $rec['on_leave_until'] === '2026-11-01' && $rec['hide_birthday'] === true);
+assert(Adapter::staff(['REPORTS_TO_ID' => 'P1'] + $oracleRow, ['P1' => '42'], '2026-10-15T09:00:00+08:00', $today)['reports_to'] === null); // never their own manager
+assert(Adapter::staff(['PH_EXT' => 'LEFT'] + $oracleRow, [], '2026-10-15T09:00:00+08:00', $today)['status'] === 'inactive');
+assert(Adapter::staff(['E_STATUS' => 'xcon'] + $oracleRow, [], '2026-10-15T09:00:00+08:00', $today)['status'] === 'inactive');
+assert(Schema::validate('staff', $rec, false)['errors'] === []);                               // adapter output is a valid contract record
+$dob = fn (string $value): ?string => Adapter::staff(['DOB' => $value] + $oracleRow, [], '2026-10-15T09:00:00+08:00', $today)['date_of_birth'];
+assert($dob('15Jun65') === '1965-06-15' && $dob('15jun05') === '2005-06-15');                  // PHP alone would say 2065
+assert($dob('13Oct26') === '2026-10-13' && $dob('14Oct26') === '1926-10-14');                  // birth dates never in the future
+assert($dob('31Feb85') === null && $dob('') === null && $dob('garbage') === null && $dob('19650615') === '1965-06-15');
+$start = fn (string $value): ?string => Adapter::staff(['START_DATE' => $value] + $oracleRow, [], '2026-10-15T09:00:00+08:00', $today)['start_date'];
+assert($start('01Apr27') === '2027-04-01' && $start('20260231') === null);                     // future start dates stay future
+$division = Adapter::division(['DIV_CODE' => 'BNB', 'DIV_NAME' => 'W.A. COUNTRY BUILDERS ( BUNBURY)', 'PHONE' => '9721 0000', 'DIV_ADDR1' => '1 Main St', 'DIV_ADDR2' => '', 'DIV_PCODE' => '6230', 'POSTAL_ADDRESS' => ''], '2026-10-15T09:00:00+08:00');
+assert($division['id'] === 'BNB' && $division['name'] === 'W.A. Country Builders (Bunbury)' && $division['address_line2'] === null);
+assert(Schema::validate('divisions', $division, false)['errors'] === []);
+assert(Adapter::companyFor('BNB') === 'WA Country Builders' && Adapter::companyFor('NEW') === null);
 
 echo "plan-check OK\n";

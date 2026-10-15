@@ -60,21 +60,6 @@ final class PostTypes
     /** The Phonelist menu opens the Staff list. */
     public const MENU = 'edit.php?post_type=' . self::STAFF;
 
-    /** Kept in capitals by prettyName(). */
-    private const ACRONYMS = ['JWH', 'IT', 'GSH', 'W.A.'];
-
-    /**
-     * 'W.A. COUNTRY BUILDERS ( BUNBURY)' → 'W.A. Country Builders (Bunbury)'.
-     */
-    public static function prettyName(string $name): string
-    {
-        $name = preg_replace(['/\s+/', '/\(\s*/', '/\s*\)/'], [' ', '(', ')'], trim($name));
-        $name = ucwords(strtolower($name), " -(/");
-        $acronyms = implode('|', array_map(fn (string $acronym): string => preg_quote($acronym, '/'), self::ACRONYMS));
-
-        return preg_replace_callback("/\\b($acronyms)(?=\\W|$)/i", fn (array $match): string => strtoupper($match[1]), $name);
-    }
-
     public static function fieldKey(string $postType, string $field): string
     {
         return 'field_iphl_' . self::shortName($postType) . '_' . $field;

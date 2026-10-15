@@ -1,13 +1,14 @@
 <?php
 
-namespace ConstructiveMedia\IntranetPhonelist\Sync;
+namespace ConstructiveMedia\IntranetPhonelist\Oracle;
 
 use RuntimeException;
 
 /**
- * Read-only Oracle access: only ever SELECTs from the tables in PostTypes::synced().
+ * Read-only Oracle access for the development import: only ever SELECTs from PHONE_LIST_INTRANET and DIVISIONS
+ * (see Adapter). Production leaves the credentials blank.
  */
-final class OracleSource
+final class Source
 {
     public function __construct(
         private readonly string $dsn,
@@ -25,6 +26,11 @@ final class OracleSource
             $get('INTRANET_PHONELIST_ORACLE_USER'),
             $get('INTRANET_PHONELIST_ORACLE_PASSWORD'),
         );
+    }
+
+    public function configured(): bool
+    {
+        return $this->dsn !== '' && $this->user !== '' && $this->password !== '';
     }
 
     /**
@@ -52,7 +58,7 @@ final class OracleSource
         // Session-only (writes nothing): real DATE columns (e.g. ON_LEAVE) come back as ACF's Ymd, full year, no parsing.
         oci_execute(oci_parse($connection, "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYYMMDD'"));
 
-        // Table, columns and key come from PostTypes::synced(), never user input; $id is bound.
+        // Table, columns and key come from Adapter's constants, never user input; $id is bound.
         $statement = oci_parse($connection, 'SELECT ' . implode(', ', $columns) . ' FROM ' . $table . ($key ? " WHERE $key = :id" : ''));
         if ($statement && $key) {
             oci_bind_by_name($statement, ':id', $id);

@@ -7,6 +7,9 @@ use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
 use ConstructiveMedia\IntranetPhonelist\Api\IngressController;
 use ConstructiveMedia\IntranetPhonelist\Api\ReadController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
+use ConstructiveMedia\IntranetPhonelist\Cli\OracleImportCommand;
+use ConstructiveMedia\IntranetPhonelist\Oracle\Adapter;
+use ConstructiveMedia\IntranetPhonelist\Oracle\Source;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
@@ -39,6 +42,14 @@ final class Plugin
     public static function jobs(): Jobs
     {
         return self::$jobs;
+    }
+
+    /**
+     * The development Oracle import (does nothing without Oracle credentials).
+     */
+    public static function oracle(): Adapter
+    {
+        return new Adapter(Source::fromConstants(), self::$ingestor, self::$jobs);
     }
 
     public static function boot(string $pluginFile): void
@@ -77,6 +88,9 @@ final class Plugin
         }
         if (defined('WP_CLI') && WP_CLI) {
             (new ClubCommand())->register();
+            if (self::oracle()->configured()) {
+                (new OracleImportCommand(self::oracle()))->register();
+            }
         }
     }
 }
