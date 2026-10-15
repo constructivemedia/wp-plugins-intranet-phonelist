@@ -44,6 +44,9 @@ define( 'INTRANET_PHONELIST_ORACLE_DSN', $env( 'INTRANET_PHONELIST_ORACLE_DSN', 
 define( 'INTRANET_PHONELIST_ORACLE_USER', $env( 'INTRANET_PHONELIST_ORACLE_USER', '' ) );
 define( 'INTRANET_PHONELIST_ORACLE_PASSWORD', $env( 'INTRANET_PHONELIST_ORACLE_PASSWORD', '' ) );
 
+// Intranet Phonelist: shared secret for signed API requests (a fixed one for local testing unless .env sets one).
+define( 'INTRANET_PHONELIST_API_SECRET', $env( 'INTRANET_PHONELIST_API_SECRET', 'local-dev-secret' ) );
+
 // Intranet Phonelist: folder of staff photos named first_last_divcode.jpg (gitignored).
 define( 'INTRANET_PHONELIST_PHOTOS_DIR', $env( 'INTRANET_PHONELIST_PHOTOS_DIR', __DIR__ . '/assets/staffPhotos' ) );
 

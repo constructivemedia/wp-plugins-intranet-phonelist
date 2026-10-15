@@ -4,7 +4,8 @@ namespace ConstructiveMedia\IntranetPhonelist;
 
 use ConstructiveMedia\IntranetPhonelist\Admin\Relationships;
 use ConstructiveMedia\IntranetPhonelist\Admin\SettingsPage;
-use ConstructiveMedia\IntranetPhonelist\Api\StaffController;
+use ConstructiveMedia\IntranetPhonelist\Api\IngressController;
+use ConstructiveMedia\IntranetPhonelist\Api\ReadController;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
@@ -59,7 +60,8 @@ final class Plugin
         add_action('admin_menu', [$postTypes, 'registerMenu'], 9);
         add_action('acf/include_fields', [$postTypes, 'registerFields']);
         $postTypes->lock();
-        (new StaffController())->register();
+        (new IngressController(self::$ingestor, self::$jobs, $log))->register();
+        (new ReadController(self::$ingestor))->register();
         register_activation_hook($pluginFile, [$log, 'install']);
 
         // Daily housekeeping: expired log entries and finished jobs.
