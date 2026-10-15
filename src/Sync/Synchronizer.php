@@ -220,7 +220,7 @@ final class Synchronizer
         $done = 0;
         foreach ($plan['delete'] as $post) {
             $this->tick("{$config['plural']}: deleting", ++$done, count($plan['delete']));
-            $title = get_the_title($post['post_id']);
+            $title = get_post_field('post_title', $post['post_id'], 'raw');
             $context = ['division' => (string) get_post_meta($post['post_id'], 'div_code', true)];
             Photos::detach($post['post_id']); // Leavers' photos go too.
             if (wp_delete_post($post['post_id'], true)) {
@@ -386,36 +386,37 @@ final class Synchronizer
     }
 
     /**
-     * Create mapped companies that don't exist yet and point each mapped division at its company.
-     * Companies are matched by name and never deleted; divisions not in the mapping are left alone.
+     * Give every synced division a company (CompanyMap::companyFor): the mapped one, else the one set by hand,
+     * else a company named after the division, created if it doesn't exist. Companies are matched by name and never deleted.
      */
     private function linkCompanies(): void
     {
+        $this->progress('Linking divisions to companies…');
         $map = $this->companies->get();
-        if (!$map) {
-            return;
-        }
-        $this->progress('Applying the company mapping…');
 
         $companyIds = [];
         foreach (get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'post_status' => 'any']) as $company) {
             $companyIds[$company->post_title] ??= $company->ID;
         }
-
-        foreach (array_keys($map) as $name) {
-            $name = (string) $name;
+        // Find or create a company by name; null if it couldn't be created.
+        $company = function (string $name, string $why) use (&$companyIds): ?int {
             if (isset($companyIds[$name])) {
-                continue;
+                return $companyIds[$name];
             }
             $id = wp_insert_post(['post_type' => PostTypes::COMPANY, 'post_status' => 'publish', 'post_title' => $name], true);
             if (is_wp_error($id)) {
                 $this->counts['errors']++;
                 $this->record('error', 'error', PostTypes::COMPANY, label: $name, message: $id->get_error_message());
-                continue;
+                return null;
             }
-            $companyIds[$name] = $id;
             $this->counts['created']++;
-            $this->record('info', 'created', PostTypes::COMPANY, label: $name, message: 'From the company mapping.');
+            $this->record('info', 'created', PostTypes::COMPANY, label: $name, message: $why);
+
+            return $companyIds[$name] = $id;
+        };
+
+        foreach (array_keys($map) as $name) {
+            $company((string) $name, 'From the company mapping.');
         }
 
         ['divisions' => $mapped, 'conflicts' => $conflicts] = CompanyMap::byDivision($map);
@@ -424,24 +425,26 @@ final class Synchronizer
             $this->record('warning', 'company_map', message: count($conflicts) . ' division(s) are listed under more than one company; the first is used.', context: ['items' => $items]);
         }
 
-        $divisions = $this->existing(PostTypes::DIVISION);
-        foreach ($mapped as $code => $name) {
+        foreach ($this->existing(PostTypes::DIVISION) as $code => $division) {
             $this->heartbeat();
-            if (!isset($divisions[$code], $companyIds[$name])) {
-                continue; // Division not synced (e.g. no current staff), or its company failed to save.
-            }
-            $postId = $divisions[$code]['post_id'];
+            $code = (string) $code;
+            $postId = $division['post_id'];
+            $title = get_post_field('post_title', $postId, 'raw'); // Raw: get_the_title() would turn '-' into '&#8211;'.
             $current = (int) get_post_meta($postId, 'company', true);
-            if ($current === $companyIds[$name]) {
+            $hasCompany = $current && get_post_type($current) === PostTypes::COMPANY; // A deleted company counts as none.
+
+            $name = CompanyMap::companyFor($code, $title, $hasCompany, $mapped);
+            $target = $name === null ? null : $company($name, "Named after the $title division (not in the mapping).");
+            if ($target === null || $target === $current) {
                 continue;
             }
 
-            update_field('field_iphl_division_company', $companyIds[$name], $postId);
+            update_field('field_iphl_division_company', $target, $postId);
             if (!isset($this->pending[PostTypes::DIVISION . "|$code"])) {
                 $this->counts['updated']++;
             }
-            $this->pend(PostTypes::DIVISION, $code, get_the_title($postId), 'updated', [
-                'COMPANY' => ['from' => $current ? get_the_title($current) : '', 'to' => $name],
+            $this->pend(PostTypes::DIVISION, $code, $title, 'updated', [
+                'COMPANY' => ['from' => $hasCompany ? get_post_field('post_title', $current, 'raw') : '', 'to' => $name],
             ]);
         }
     }

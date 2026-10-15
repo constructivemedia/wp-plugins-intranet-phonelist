@@ -95,6 +95,13 @@ $byDivision = CompanyMap::byDivision(['A' => ['X', 'Y'], 'B' => ['Y', 'Z']]);
 assert($byDivision['divisions'] === ['X' => 'A', 'Y' => 'A', 'Z' => 'B']); // first listing wins
 assert($byDivision['conflicts'] === ['Y' => ['A', 'B']]);
 
+// Every division gets a company: mapped, else kept if set by hand, else one named after the division.
+$mapped = ['JIT' => 'JWH Group'];
+assert(CompanyMap::companyFor('JIT', 'JWH IT', true, $mapped) === 'JWH Group');                       // mapping wins over a hand-set one
+assert(CompanyMap::companyFor('RBC', 'Rural Building Company', true, $mapped) === null);              // set by hand, not mapped: keep
+assert(CompanyMap::companyFor('RBC', 'Rural Building Company', false, $mapped) === 'Rural Building Company');
+assert(CompanyMap::companyFor('NEW', 'Brand New Division', false, []) === 'Brand New Division');      // works with no mapping at all
+
 // Photo matching: 'first_last_divcode.jpg', preferred name first, names simplified the same way on both sides.
 $photoRow = fn (string $pref, string $first, string $last, string $div = 'JWH') => ['PREF_NAME' => $pref, 'NAME_FIRST' => $first, 'NAME_LAST_CO' => $last, 'DIV_CODE' => $div];
 assert(Photos::candidates($photoRow('Janey', 'Jane A', 'Citizen')) === ['janey_citizen_jwh', 'jane_citizen_jwh', 'janea_citizen_jwh']);

@@ -60,7 +60,10 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
   ```
 
   - **On save, and on every full sync:** missing companies are created, and each listed division's **Company** is set. A change is logged as `COMPANY: from → to`.
-  - **The mapping wins** for the divisions it lists. Divisions not listed can still be set by hand on the division; any left without a company are flagged as a `no_company` warning.
+  - **Every division gets a company,** and so every staff member does:
+    1. In the mapping: the mapped company (the mapping wins).
+    2. Not in the mapping, but set by hand on the division: kept.
+    3. Neither: a company **named after the division**, created if it doesn't exist (e.g. the *Rural Building Company* division joins the *Rural Building Company* company).
   - **Companies are matched by name and never deleted.**
 
 ## Staff links (for Admin Columns and queries)

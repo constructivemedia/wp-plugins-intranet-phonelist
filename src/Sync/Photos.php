@@ -60,7 +60,7 @@ final class Photos
         // media_handle_sideload() moves its input, so hand it a copy and leave the source folder untouched.
         $copy = wp_tempnam(basename($file));
         copy($file, $copy);
-        $attachmentId = media_handle_sideload(['name' => basename($file), 'tmp_name' => $copy], $postId, get_the_title($postId));
+        $attachmentId = media_handle_sideload(['name' => basename($file), 'tmp_name' => $copy], $postId, get_post_field('post_title', $postId, 'raw'));
         if (is_wp_error($attachmentId)) {
             @unlink($copy);
             throw new RuntimeException('Photo upload failed for ' . basename($file) . ': ' . $attachmentId->get_error_message());

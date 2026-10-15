@@ -129,7 +129,7 @@ final class SettingsPage
         ?>
         <p>One company per line, then its division codes: <code>WA Country Builders: GTN, BSN, BNB, ALB, CDR</code>.
             Saving creates any missing companies and sets each listed division's Company; every full sync re-applies it.
-            Divisions not listed here can be set by hand on the division.</p>
+            A division not listed keeps a company set by hand on the division; otherwise it gets a company named after itself, so everyone has a company.</p>
 
         <form method="post" action="<?= esc_url(admin_url('admin-post.php')) ?>">
             <input type="hidden" name="action" value="intranet_phonelist_save_companies">
@@ -172,7 +172,7 @@ final class SettingsPage
                 <?php foreach ($unmapped as $code => $division) : ?>
                     <?php $companyId = (int) get_post_meta($division->ID, 'company', true); ?>
                     <li><code><?= esc_html((string) $code) ?></code> <a href="<?= esc_url(get_edit_post_link($division->ID)) ?>"><?= esc_html($division->post_title) ?></a>
-                        — <?= $companyId ? esc_html(get_the_title($companyId)) . ' (set by hand)' : '<span style="color:#996800">no company</span>' ?></li>
+                        — <?= $companyId ? esc_html(get_the_title($companyId)) : '<span style="color:#996800">no company</span>' ?></li>
                 <?php endforeach; ?>
             </ul>
         <?php endif; ?>

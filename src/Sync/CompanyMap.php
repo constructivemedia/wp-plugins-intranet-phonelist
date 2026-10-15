@@ -49,6 +49,18 @@ final class CompanyMap
     }
 
     /**
+     * The company a division should belong to, or null to leave it as it is.
+     * Mapped → that company. Not mapped but set by hand → keep it. Neither → a company named after the division,
+     * so every division (and so every staff member) has a company.
+     *
+     * @param array<string, string> $mapped DIV_CODE => company name, from byDivision().
+     */
+    public static function companyFor(string $code, string $divisionName, bool $hasCompany, array $mapped): ?string
+    {
+        return $mapped[$code] ?? ($hasCompany ? null : $divisionName);
+    }
+
+    /**
      * @return array{divisions: array<string, string>, conflicts: array<string, string[]>}
      *     DIV_CODE => company name (exact codes, first listing wins), and DIV_CODE => every company listing it, where more than one does.
      */
