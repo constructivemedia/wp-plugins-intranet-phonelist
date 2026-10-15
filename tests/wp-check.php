@@ -218,6 +218,11 @@ try {
 
     // Jobs: a batch resolves out-of-order references, repeats by idempotency key, and a crashed job is resumed.
     $jobs = Plugin::jobs();
+    $snapshot = function (array $records) use ($jobs): array {
+        $job = $jobs->create('snapshot', 'companies', $records, null, 'api');
+        $jobs->process($job['id']);
+        return $jobs->get($job['id'])['results'];
+    };
     $job = $jobs->create('batch', null, [
         ['op' => 'put', 'type' => 'staff', 'id' => 'test-b1', 'data' => $jane + ['division_id' => 'test-BD', 'updated_at' => $t1]],
         ['op' => 'put', 'type' => 'divisions', 'id' => 'test-BD', 'data' => ['name' => 'Test Batch Division', 'updated_at' => $t1]],
@@ -262,13 +267,13 @@ try {
         $in->put('companies', 'test-C1', ['name' => 'Test Company One', 'updated_at' => $t1], 'test-run', 'api');
         $in->put('companies', 'test-C2', ['name' => 'Test Company Two', 'updated_at' => $t1], 'test-run', 'api');
         $ours = $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 2;
-        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]], 'test-run', 'api');
+        $results = $snapshot([['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]]);
         assert(array_column($results, 'result') === ['unchanged', 'deleted']);
         assert($in->postId('companies', 'test-C1') > 0 && $in->postId('companies', 'test-C2') === 0);
         assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 1 === (int) $ours); // ours untouched
 
         // A snapshot with unusable ids (numbers here) deletes nothing.
-        $results = $jobs->applySnapshot('companies', [['id' => 7, 'name' => 'Test Seven', 'updated_at' => $t2]], 'test-run', 'api');
+        $results = $snapshot([['id' => 7, 'name' => 'Test Seven', 'updated_at' => $t2]]);
         assert($in->postId('companies', 'test-C1') > 0 && !in_array('deleted', array_column($results, 'result'), true));
         assert(end($results)['result'] === 'error');
 
@@ -276,7 +281,7 @@ try {
         for ($i = 2; $i <= 13; $i++) {
             $in->put('companies', "test-C$i", ['name' => "Test Company $i", 'updated_at' => $t1], 'test-run', 'api');
         }
-        $results = $jobs->applySnapshot('companies', [['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]], 'test-run', 'api');
+        $results = $snapshot([['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]]);
         assert($in->postId('companies', 'test-C13') > 0 && end($results)['result'] === 'error');
     } else {
         echo "Skipped the snapshot deletion check: this site has companies with Data Hub IDs.\n";

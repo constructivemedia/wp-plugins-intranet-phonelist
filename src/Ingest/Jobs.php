@@ -213,20 +213,6 @@ final class Jobs
     }
 
     /**
-     * A snapshot without the queue (the Oracle import uses this): every record is put, then records of $type with a
-     * Data Hub ID that aren't in the snapshot are deleted, then every staff link is rechecked.
-     *
-     * @return array<array> A result per record, then one per deleted record.
-     */
-    public function applySnapshot(string $type, array $records, string $runId, string $trigger): array
-    {
-        $operations = self::puts($type, $records);
-        $results = array_map(fn (array $operation): array => $this->apply($operation, $runId, $trigger), $operations);
-
-        return [...$results, ...$this->finishSnapshot($type, $operations, $runId, $trigger)];
-    }
-
-    /**
      * Delete finished jobs older than KEEP_DAYS. Run daily. Returns jobs deleted.
      */
     public function prune(): int

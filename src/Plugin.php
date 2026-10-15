@@ -27,7 +27,6 @@ final class Plugin
     private static Ingestor $ingestor;
     private static Relations $relations;
     private static Jobs $jobs;
-    private static Adapter $oracle;
 
     /**
      * The services, for tests/wp-check.php.
@@ -47,20 +46,12 @@ final class Plugin
         return self::$jobs;
     }
 
-    /**
-     * The development Oracle import (unavailable without Oracle credentials).
-     */
-    public static function oracle(): Adapter
-    {
-        return self::$oracle;
-    }
-
     public static function boot(string $pluginFile): void
     {
         global $wpdb;
 
         $log = new Log($wpdb);
-        $log->maybeUpgrade();
+        $log->register();
         Upgrade::maybeRun($log);
         self::$relations = new Relations($wpdb);
         self::$relations->register();
@@ -68,7 +59,7 @@ final class Plugin
         self::$ingestor = new Ingestor($log, self::$relations, $photos);
         self::$jobs = new Jobs(self::$ingestor, self::$relations, $log, $wpdb);
         self::$jobs->register();
-        self::$oracle = new Adapter(self::$ingestor, self::$jobs);
+        $oracle = new Adapter(self::$ingestor, self::$jobs);
         $postTypes = new PostTypes();
 
         add_action('init', [$postTypes, 'register']);
@@ -91,9 +82,9 @@ final class Plugin
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
         }
 
-        add_action(self::ORACLE_HOOK, function (int $userId = 0): void {
+        add_action(self::ORACLE_HOOK, function (int $userId = 0) use ($oracle): void {
             wp_set_current_user($userId); // Logged as the user who clicked Import.
-            self::$oracle->run(null, wp_generate_uuid4(), 'manual', fn () => null);
+            $oracle->run(null, 'manual', fn () => null);
         });
 
         if (is_admin()) {
@@ -104,7 +95,7 @@ final class Plugin
             (new ClubCommand())->register();
             (new JobCommand(self::$jobs))->register();
             if (Adapter::configured()) {
-                (new OracleImportCommand(self::$oracle))->register();
+                (new OracleImportCommand($oracle))->register();
             }
         }
     }

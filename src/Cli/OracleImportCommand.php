@@ -30,9 +30,8 @@ final class OracleImportCommand
 
     public function __invoke(array $args, array $options): void
     {
-        $runId = wp_generate_uuid4();
         try {
-            $results = $this->adapter->run($options['staff'] ?? null, $runId, 'oracle', fn (string $step) => WP_CLI::log($step));
+            $results = $this->adapter->run($options['staff'] ?? null, 'oracle', fn (string $step) => WP_CLI::log($step));
         } catch (Throwable $e) {
             WP_CLI::error($e->getMessage());
         }
@@ -40,6 +39,6 @@ final class OracleImportCommand
         foreach ($results as $type => $typeResults) {
             WP_CLI::log(ucfirst($type) . ': ' . Jobs::summary($typeResults));
         }
-        WP_CLI::success("Imported (job $runId in the log).");
+        WP_CLI::success('Imported (see the Jobs and Logs tabs).');
     }
 }

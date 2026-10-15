@@ -58,12 +58,12 @@ final class Adapter
     }
 
     /**
-     * Import everything (divisions, then staff, as snapshots), or one staff member by Oracle ID.
+     * Import everything (divisions, then staff, each as a snapshot job run straight away), or one staff member.
      *
      * @param callable(string): void $progress
      * @return array<string, array<array>> Type => a result per record (see Jobs::summary()).
      */
-    public function run(?string $staffId, string $runId, string $trigger, callable $progress): array
+    public function run(?string $staffId, string $trigger, callable $progress): array
     {
         $updatedAt = (new DateTimeImmutable('now', wp_timezone()))->format(DATE_RFC3339);
         $today = new DateTimeImmutable('today', wp_timezone());
@@ -80,7 +80,7 @@ final class Adapter
 
         if ($staffId !== null) {
             $record = current(array_filter($staff, fn (array $record): bool => $record['id'] === $staffId));
-            return ['staff' => [$record ? $this->ingestor->put('staff', $staffId, $record, $runId, $trigger)->toArray() : ['result' => 'not_found']]];
+            return ['staff' => [$record ? $this->ingestor->put('staff', $staffId, $record, wp_generate_uuid4(), $trigger)->toArray() : ['result' => 'not_found']]];
         }
 
         // Only divisions someone on the phone list works in.
@@ -97,7 +97,11 @@ final class Adapter
             $results = [];
             foreach (['divisions' => $divisions, 'staff' => $staff] as $type => $records) {
                 $progress(sprintf('Importing %d %s…', count($records), $type));
-                $results[$type] = $this->jobs->applySnapshot($type, $records, $runId, $trigger);
+                $job = $this->jobs->create('snapshot', $type, $records, null, $trigger);
+                if (!$this->jobs->process($job['id'])) {
+                    throw new RuntimeException("Another job is running, so the $type snapshot was queued (job {$job['id']}); it will run shortly.");
+                }
+                $results[$type] = $this->jobs->get($job['id'])['results'];
             }
         } finally {
             remove_filter('intranet_phonelist_new_division_company', $mapped, 10);

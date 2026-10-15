@@ -25,11 +25,6 @@ final class Outcome
     ) {
     }
 
-    public function failed(): bool
-    {
-        return $this->status >= 400;
-    }
-
     /**
      * The API's view of it: the result, plus errors, warnings or a message when there are any.
      */

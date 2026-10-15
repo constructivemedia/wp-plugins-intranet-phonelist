@@ -212,7 +212,7 @@ final class IngressController
 
     private function respond(Outcome $outcome): WP_REST_Response
     {
-        if (!$outcome->failed()) {
+        if ($outcome->status < 400) {
             return new WP_REST_Response($outcome->status === 204 ? null : $outcome->toArray(), $outcome->status);
         }
 

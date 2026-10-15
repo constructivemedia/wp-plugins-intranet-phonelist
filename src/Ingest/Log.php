@@ -52,9 +52,9 @@ final class Log
     }
 
     /**
-     * Upgrade the table on sites installed with an older schema (dbDelta only ever adds).
+     * Create or upgrade the table when the schema changes (dbDelta only ever adds).
      */
-    public function maybeUpgrade(): void
+    public function register(): void
     {
         if (get_option(self::SCHEMA_OPTION) !== self::SCHEMA) {
             $this->install();
