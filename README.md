@@ -3,7 +3,7 @@
 A WordPress plugin that mirrors staff and divisions from JWH's Oracle database into WordPress. Theme developers can then query them in PHP or over REST.
 
 - **Company** (entered by hand in WordPress) → **Division** (synced from `DIVISIONS`) → **Staff** (synced from `PHONE_LIST_INTRANET`).
-- Requires PHP 8.1+, Advanced Custom Fields, and the `oci8` extension with Oracle Instant Client. Admin Columns is optional.
+- Requires PHP 8.1+, Advanced Custom Fields, the `oci8` extension with Oracle Instant Client, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
 - Oracle access is read-only: the plugin only ever runs `SELECT` on those two tables.
 
 ## Local setup (DDEV)
@@ -43,7 +43,7 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
   - **Photos:** how many staff have a photo, and who doesn't, with the file names looked for.
 - **Log levels:**
   - `error`: failures.
-  - `warning`: divisions without a company, dates Oracle sent that couldn't be read.
+  - `warning`: divisions without a company, and values Oracle sent that couldn't be read (`bad_data`: dates stored empty, phone numbers kept as they were).
   - `notice`: deletions.
   - `info`: everything else.
   - `debug`: row counts and timings, written only with `WP_DEBUG`.
@@ -65,6 +65,21 @@ wp phonelist sync --staff=00001    # one person only; never deletes anyone else
     2. Not in the mapping, but set by hand on the division: kept.
     3. Neither: a company **named after the division**, created if it doesn't exist (e.g. the *Rural Building Company* division joins the *Rural Building Company* company).
   - **Companies are matched by name and never deleted.**
+
+## How synced values are stored
+
+Most columns are stored as Oracle sends them. These are converted once, at sync:
+
+| Columns | Stored as | Editor field |
+|---|---|---|
+| `DOB`, `START_DATE`, `INDUCTION_COMPLETE_DATE`, `ON_LEAVE` | `Ymd` dates (two-digit birth years resolve to the most recent past year) | Date picker |
+| `HIDE_BIRTHDAY` | `1` for `y`, otherwise `0` | True / false |
+| `E_STATUS` | `active` for `e`, otherwise `inactive` | Select (Active / Inactive) |
+| `MOBILE_NO`, `PH_EXT`, `HOME_PHONE`, division `PHONE` and `FAX` | One format via libphonenumber: `0437 793 226`, `(08) 9464 7800` | Text |
+
+- **Area code:** 8-digit numbers with no area code are assumed to be WA (`08`); change `PhoneNumbers::DEFAULT_AREA_CODE` if that stops being true.
+- **Unreadable numbers** are kept as they were and listed in the `bad_data` warning so they can be fixed in HR.
+- **`PH_EXT`** holds direct phone numbers; the short extensions are in `VOIP`, which is stored as is.
 
 ## Staff links (for Admin Columns and queries)
 
@@ -119,7 +134,7 @@ Phonelist::staff(division: 'JWH', tag: '20');  // exact DIV_CODE and department 
 Both return `Staff` objects with these read-only properties:
 - `id`, `postId`
 - `name`, `firstName`, `lastName`
-- `position`, `email`, `mobile`, `extension`
+- `position`, `email`, `mobile`, `extension` (the direct phone number from `PH_EXT`)
 - `divisionCode`, `division`, `company`
 - `tag` (department code), `tagDescription`
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
@@ -172,7 +187,7 @@ In the site's `composer.json`:
 
 The repository is private, so each site needs GitHub access: either a token (`composer config --global github-oauth.github.com <token>`), or an SSH key with `"url": "git@github.com:constructivemedia/wp-plugins-intranet-phonelist.git"`. Source installs (`--prefer-source`, a git clone) work the same as release zips.
 
-The package, and the folder it installs to (`wp-content/plugins/wp-plugins-intranet-phonelist/`), are named after the repository. Releases before `v1.7.1` were published as `constructivemedia/intranet-phonelist` and installed to `intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. The plugin has no runtime dependencies and loads its own classes, so it needs no `vendor/` of its own. Installing from a git clone or a zip works the same way.
+The package, and the folder it installs to (`wp-content/plugins/wp-plugins-intranet-phonelist/`), are named after the repository. Releases before `v1.7.1` were published as `constructivemedia/intranet-phonelist` and installed to `intranet-phonelist/`. It requires `composer/installers`; if the site sets custom `installer-paths`, those apply. Its one dependency, `giggsey/libphonenumber-for-php-lite`, is installed and autoloaded with the site. For a git clone or zip install, run `composer install --no-dev` in the plugin folder; the plugin loads its own `vendor/` when there is one. Without the library, phone numbers are stored as they come from Oracle and the sync logs a warning.
 
 ## Releasing
 

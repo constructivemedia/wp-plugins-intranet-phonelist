@@ -49,42 +49,58 @@ final class Planner
     }
 
     /**
-     * Convert Oracle dates to ACF's Ymd ('19850905'), once, at sync. Real DATE columns already arrive as Ymd
-     * (see OracleSource); text dates arrive as '05Sep85' (any month case). Unreadable values become ''.
-     * Birth dates resolve two-digit years to the most recent past year.
+     * Convert typed columns once, at sync (kinds from PostTypes::synced()):
+     * - DATE / BIRTH_DATE → ACF's Ymd ('19850905'). Real DATE columns already arrive as Ymd (see OracleSource); text dates
+     *   arrive as '05Sep85' (any month case). Unreadable → ''. Birth dates resolve two-digit years to the most recent past year.
+     * - BOOL → '1' for 'y', else '0'. STATUS → 'active' for 'e', else 'inactive'.
+     * - PHONE → one format via PhoneNumbers; unreadable numbers (and all numbers, if the library is missing) are kept trimmed.
      *
-     * @param array<string, string> $dates Column => PostTypes::DATE | PostTypes::BIRTH_DATE.
+     * @param array<string, string> $kinds Column => PostTypes kind.
      */
-    public static function normalize(array $row, array $dates, DateTimeImmutable $today): array
+    public static function normalize(array $row, array $kinds, DateTimeImmutable $today): array
     {
-        foreach ($dates as $column => $kind) {
+        foreach ($kinds as $column => $kind) {
             $value = trim($row[$column]);
-            $date = DateTimeImmutable::createFromFormat('!Ymd', $value) ?: DateTimeImmutable::createFromFormat('!dMy', $value);
-            $errors = DateTimeImmutable::getLastErrors(); // Catches overflow like '31Feb85'.
-            if (!$date || ($errors && $errors['warning_count'])) {
-                $row[$column] = '';
-                continue;
-            }
-            if ($kind === PostTypes::BIRTH_DATE && $date > $today) {
-                $date = $date->modify('-100 years');
-            }
-            $row[$column] = $date->format('Ymd');
+            $row[$column] = match ($kind) {
+                PostTypes::DATE, PostTypes::BIRTH_DATE => self::date($value, $kind === PostTypes::BIRTH_DATE ? $today : null),
+                PostTypes::BOOL => strtolower($value) === 'y' ? '1' : '0',
+                PostTypes::STATUS => strtolower($value) === 'e' ? 'active' : 'inactive',
+                PostTypes::PHONE => (PhoneNumbers::available() ? PhoneNumbers::format($value) : null) ?? $value,
+                default => $row[$column],
+            };
         }
 
         return $row;
     }
 
     /**
-     * Date columns that had a value in Oracle but couldn't be read (so were stored empty). 'N/A' means empty on purpose.
+     * Columns that had a value in Oracle that couldn't be read: dates stored empty ('N/A' means empty on purpose),
+     * and phone numbers kept as they were.
      *
      * @return string[] Column names.
      */
-    public static function unreadableDates(array $raw, array $normalized, array $dates): array
+    public static function unreadable(array $raw, array $normalized, array $kinds): array
     {
-        return array_values(array_filter(
-            array_keys($dates),
-            fn (string $column): bool => !in_array(strtoupper(trim($raw[$column])), ['', 'N/A'], true) && $normalized[$column] === '',
-        ));
+        return array_values(array_filter(array_keys($kinds), function (string $column) use ($raw, $normalized, $kinds): bool {
+            $value = trim($raw[$column]);
+
+            return match ($kinds[$column]) {
+                PostTypes::DATE, PostTypes::BIRTH_DATE => !in_array(strtoupper($value), ['', 'N/A'], true) && $normalized[$column] === '',
+                PostTypes::PHONE => $value !== '' && PhoneNumbers::available() && PhoneNumbers::format($value) === null,
+                default => false,
+            };
+        }));
+    }
+
+    private static function date(string $value, ?DateTimeImmutable $notAfter): string
+    {
+        $date = DateTimeImmutable::createFromFormat('!Ymd', $value) ?: DateTimeImmutable::createFromFormat('!dMy', $value);
+        $errors = DateTimeImmutable::getLastErrors(); // Catches overflow like '31Feb85'.
+        if (!$date || ($errors && $errors['warning_count'])) {
+            return '';
+        }
+
+        return ($notAfter && $date > $notAfter ? $date->modify('-100 years') : $date)->format('Ymd');
     }
 
     /**

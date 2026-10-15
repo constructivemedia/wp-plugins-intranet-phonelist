@@ -11,7 +11,13 @@
 
 defined('ABSPATH') || exit;
 
-// No runtime dependencies, so no vendor/ needed: works installed via Composer, git or zip.
+// Dependencies (libphonenumber): installed via Composer, the site's autoloader has them; a git or zip install
+// with `composer install --no-dev` run in this folder has its own vendor/. Without either, phones are stored as-is.
+if (is_file(__DIR__ . '/vendor/autoload.php')) {
+    require_once __DIR__ . '/vendor/autoload.php';
+}
+
+// The plugin's own classes, however it was installed.
 spl_autoload_register(function (string $class): void {
     $prefix = 'ConstructiveMedia\\IntranetPhonelist\\';
     if (str_starts_with($class, $prefix)) {

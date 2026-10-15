@@ -7,7 +7,15 @@ namespace ConstructiveMedia\IntranetPhonelist;
  */
 final class PostTypes
 {
+    /** Value kinds: how a synced column is converted at sync and shown in the editor. */
     public const DATE = 'date';
+    /** 'y' → true ('1'), anything else → false ('0'); an ACF true/false field. */
+    public const BOOL = 'bool';
+    /** 'e' → 'active', anything else → 'inactive'; an ACF select. */
+    public const STATUS = 'status';
+    /** Formatted with libphonenumber ('0437 793 226', '(08) 9464 7800'); unreadable numbers are kept as they are. */
+    public const PHONE = 'phone';
+    public const STATUS_CHOICES = ['active' => 'Active', 'inactive' => 'Inactive'];
     /** Two-digit years resolve to the most recent past year: a birth date is never in the future. */
     public const BIRTH_DATE = 'birth_date';
 
@@ -48,8 +56,9 @@ final class PostTypes
      * Post types mirrored from Oracle, in sync order (divisions before staff).
      *
      * 'fields' is the editor layout: tab => [ORACLE_COLUMN => [label, width %, date kind?]]. Widths in a row add up to 100.
-     * Date kinds: self::DATE or self::BIRTH_DATE. Oracle's '05Sep85' is converted once at sync to ACF's Ymd ('19850905').
-     * 'columns' (what the sync SELECTs and writes) and 'dates' (column => kind) are derived from it.
+     * Kinds (self::DATE, BIRTH_DATE, BOOL, STATUS, PHONE) are converted once at sync (Planner::normalize()),
+     * e.g. Oracle's '05Sep85' → ACF's Ymd '19850905'. 'columns' (what the sync SELECTs and writes) and
+     * 'kinds' (column => kind) are derived from it.
      *
      * @return array<string, array{singular: string, plural: string, group: string, table: string, key: string, title: callable, fields: array, columns: string[], dates: array<string, string>}>
      */
@@ -66,7 +75,7 @@ final class PostTypes
                 'fields' => [
                     'Details' => [
                         'DIV_CODE' => ['Division Code', 25], 'DIV_NAME' => ['Division Name', 75],
-                        'PHONE' => ['Phone', 33], 'FAX' => ['Fax', 33], 'DX_NO' => ['DX Number', 34],
+                        'PHONE' => ['Phone', 33, self::PHONE], 'FAX' => ['Fax', 33, self::PHONE], 'DX_NO' => ['DX Number', 34],
                     ],
                     'Address' => [
                         'DIV_ADDR1' => ['Address Line 1', 40], 'DIV_ADDR2' => ['Address Line 2', 40], 'DIV_PCODE' => ['Postcode', 20],
@@ -86,8 +95,9 @@ final class PostTypes
                     'Contact' => [
                         'PREF_NAME' => ['Preferred Name', 33], 'NAME_FIRST' => ['First Name', 33], 'NAME_LAST_CO' => ['Last Name', 34],
                         'FULL_NAME' => ['Full Name', 100],
-                        'EMAIL' => ['Email', 50], 'MOBILE_NO' => ['Mobile', 25], 'PH_EXT' => ['Extension', 25],
-                        'VOIP' => ['VoIP', 50], 'HOME_PHONE' => ['Home Phone', 50],
+                        // PH_EXT holds full direct numbers; the short extensions are in VOIP (left as they are).
+                        'EMAIL' => ['Email', 50], 'MOBILE_NO' => ['Mobile', 25, self::PHONE], 'PH_EXT' => ['Direct Phone', 25, self::PHONE],
+                        'VOIP' => ['Extension (VoIP)', 50], 'HOME_PHONE' => ['Home Phone', 50, self::PHONE],
                     ],
                     'Role' => [
                         'POSITION' => ['Position', 50], 'POSITION_NO' => ['Position No.', 25], 'POSITION_ABBR' => ['Position Abbr.', 25],
@@ -98,10 +108,10 @@ final class PostTypes
                     ],
                     'Employment' => [
                         'START_DATE' => ['Start Date', 50, self::DATE], 'INDUCTION_COMPLETE_DATE' => ['Induction Completed', 50, self::DATE],
-                        'E_STATUS' => ['Status', 33], 'ON_LEAVE' => ['On Leave', 33, self::DATE], 'AWARD_CODE' => ['Award Code', 34],
+                        'E_STATUS' => ['Status', 33, self::STATUS], 'ON_LEAVE' => ['On Leave', 33, self::DATE], 'AWARD_CODE' => ['Award Code', 34],
                     ],
                     'Birthday' => [
-                        'DOB' => ['Date of Birth', 50, self::BIRTH_DATE], 'HIDE_BIRTHDAY' => ['Hide Birthday', 50],
+                        'DOB' => ['Date of Birth', 50, self::BIRTH_DATE], 'HIDE_BIRTHDAY' => ['Hide Birthday', 50, self::BOOL],
                     ],
                     'Record' => [
                         'ID' => ['Oracle ID', 100],
@@ -113,7 +123,7 @@ final class PostTypes
         foreach ($types as &$type) {
             $fields = array_merge(...array_values($type['fields']));
             $type['columns'] = array_keys($fields);
-            $type['dates'] = array_filter(array_map(fn (array $field): ?string => $field[2] ?? null, $fields));
+            $type['kinds'] = array_filter(array_map(fn (array $field): ?string => $field[2] ?? null, $fields));
         }
 
         return $types;
@@ -198,8 +208,13 @@ final class PostTypes
             foreach ($config['fields'] as $tab => $columns) {
                 $fields[] = ['key' => 'field_iphl_' . self::shortName($type) . '_tab_' . sanitize_key($tab), 'label' => $tab, 'type' => 'tab'];
                 foreach ($columns as $column => [$label, $width]) {
-                    $date = isset($config['dates'][$column]) ? ['type' => 'date_picker', 'display_format' => 'j M Y', 'return_format' => 'Ymd'] : [];
-                    $fields[] = $date + [
+                    $kind = match ($config['kinds'][$column] ?? null) {
+                        self::DATE, self::BIRTH_DATE => ['type' => 'date_picker', 'display_format' => 'j M Y', 'return_format' => 'Ymd'],
+                        self::BOOL => ['type' => 'true_false', 'ui' => 1, 'disabled' => 1],
+                        self::STATUS => ['type' => 'select', 'choices' => self::STATUS_CHOICES, 'disabled' => 1],
+                        default => [],
+                    };
+                    $fields[] = $kind + [
                         'key' => self::fieldKey($type, $column),
                         'name' => strtolower($column),
                         'label' => $label,

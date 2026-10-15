@@ -58,7 +58,7 @@ foreach (PostTypes::synced() as $type => $config) {
         foreach ($columns as [, $width]) {
             $row += $width;
             $row = $row === 100 ? 0 : $row;
-            assert($row < 100, "$type/$tab widths overflow a row");
+            assert($row < 100, "{$type}/{$tab} widths overflow a row");
         }
         assert($row === 0, "$type/$tab has an unfinished row");
     }
@@ -84,7 +84,19 @@ assert(!str_contains(json_encode($changes), '1985'));
 assert(Planner::redact(['ID' => '1', 'DOB' => '19850905', 'HOME_PHONE' => '9999', 'EMAIL' => 'a@x']) === ['ID' => '1', 'EMAIL' => 'a@x']);
 $raw = ['DOB' => '31Feb85', 'START_DATE' => 'N/A', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '05Sep85'];
 $normalized = ['DOB' => '', 'START_DATE' => '', 'ON_LEAVE' => '', 'INDUCTION_COMPLETE_DATE' => '19850905'];
-assert(Planner::unreadableDates($raw, $normalized, array_fill_keys(array_keys($raw), PostTypes::DATE)) === ['DOB']); // 'N/A' and '' are empty on purpose
+assert(Planner::unreadable($raw, $normalized, array_fill_keys(array_keys($raw), PostTypes::DATE)) === ['DOB']); // 'N/A' and '' are empty on purpose
+
+// Other kinds: BOOL 'y' → '1', STATUS 'e' → 'active', PHONE in one format (unreadable kept as is, and reported).
+$kinds = ['HIDE_BIRTHDAY' => PostTypes::BOOL, 'E_STATUS' => PostTypes::STATUS, 'MOBILE_NO' => PostTypes::PHONE, 'PH_EXT' => PostTypes::PHONE];
+$typed = fn (array $row) => Planner::normalize($row, $kinds, new DateTimeImmutable('2026-10-13'));
+$row = $typed(['HIDE_BIRTHDAY' => 'y', 'E_STATUS' => 'e', 'MOBILE_NO' => '0437793226', 'PH_EXT' => '(08) 94647800']);
+assert($row === ['HIDE_BIRTHDAY' => '1', 'E_STATUS' => 'active', 'MOBILE_NO' => '0437 793 226', 'PH_EXT' => '(08) 9464 7800']);
+$row = $typed(['HIDE_BIRTHDAY' => ' ', 'E_STATUS' => 'xcon', 'MOBILE_NO' => '+61437793226', 'PH_EXT' => '9464 7800']);
+assert($row === ['HIDE_BIRTHDAY' => '0', 'E_STATUS' => 'inactive', 'MOBILE_NO' => '0437 793 226', 'PH_EXT' => '(08) 9464 7800']); // no area code → 08
+assert($typed(['HIDE_BIRTHDAY' => 'Y', 'E_STATUS' => 'E', 'MOBILE_NO' => '', 'PH_EXT' => ''])['HIDE_BIRTHDAY'] === '1');
+$raw = ['HIDE_BIRTHDAY' => '', 'E_STATUS' => '', 'MOBILE_NO' => '0894647800 - Bunbury', 'PH_EXT' => ''];
+assert($typed($raw)['MOBILE_NO'] === '0894647800 - Bunbury');                                       // unreadable: kept as it was
+assert(Planner::unreadable($raw, $typed($raw), $kinds) === ['MOBILE_NO']);                          // ...and reported
 
 // Company mapping: one company per line, codes split by commas/spaces, blank lines ignored, round-trips.
 $map = CompanyMap::parse("WA Country Builders: GTN, BSN,BNB  ALB\n\nJWH Group: JWH, JIT\nJWH Group: JIT, CME\nNo Codes Yet:\n");

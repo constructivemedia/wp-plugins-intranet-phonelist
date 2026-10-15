@@ -65,7 +65,7 @@ final class Phonelist
         foreach (self::staffPosts() as $post) {
             $meta = fn (string $key): string => (string) get_post_meta($post->ID, $key, true);
 
-            if (strtolower(trim($meta('hide_birthday'))) === 'y') {
+            if (in_array(strtolower(trim($meta('hide_birthday'))), ['1', 'y'], true)) { // 'y' until the first sync after v1.10 converts it.
                 continue;
             }
             $next = self::nextBirthday($meta('dob'), $today);

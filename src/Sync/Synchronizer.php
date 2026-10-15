@@ -155,18 +155,8 @@ final class Synchronizer
             $rows[$type] = [];
             $this->raw[$type] = array_column($raw, null, $config['key']);
             foreach ($raw as $row) {
-                $normalized = Planner::normalize($row, $config['dates'], $today);
-                foreach (Planner::unreadableDates($row, $normalized, $config['dates']) as $column) {
-                    // Private columns (DOB) never have their value logged.
-                    $value = in_array($column, PostTypes::PRIVATE_COLUMNS, true) ? '(hidden)' : $row[$column];
-                    $unreadable[] = ['code' => $row[$config['key']], 'label' => $config['title']($row), 'field' => $column, 'value' => $value];
-                }
-                $rows[$type][] = $normalized;
+                $rows[$type][] = Planner::normalize($row, $config['kinds'], $today);
             }
-        }
-
-        if ($unreadable) {
-            $this->record('warning', 'bad_date', message: count($unreadable) . ' date(s) in Oracle could not be read and were stored empty.', context: ['items' => $unreadable]);
         }
 
         if ($full) {
@@ -174,6 +164,26 @@ final class Synchronizer
             if (!$rows[PostTypes::DIVISION]) {
                 throw new RuntimeException('No division has any current staff; aborting so nothing is deleted.');
             }
+        }
+
+        // Report unreadable values for the records actually synced (not, say, divisions with no staff).
+        foreach ($rows as $type => $typeRows) {
+            $config = $types[$type];
+            foreach ($typeRows as $row) {
+                $original = $this->raw[$type][$row[$config['key']]];
+                foreach (Planner::unreadable($original, $row, $config['kinds']) as $column) {
+                    // Private columns (DOB, home phone) never have their value logged.
+                    $value = in_array($column, PostTypes::PRIVATE_COLUMNS, true) ? '(hidden)' : $original[$column];
+                    $unreadable[] = ['code' => $row[$config['key']], 'label' => $config['title']($row), 'field' => $column, 'value' => $value];
+                }
+            }
+        }
+
+        if ($unreadable) {
+            $this->record('warning', 'bad_data', message: count($unreadable) . ' value(s) from Oracle could not be read: dates are stored empty, phone numbers as they were.', context: ['items' => $unreadable]);
+        }
+        if (!PhoneNumbers::available()) {
+            $this->record('warning', 'bad_data', message: 'giggsey/libphonenumber-for-php-lite is not installed, so phone numbers are stored as they come from Oracle.');
         }
 
         return $rows;
