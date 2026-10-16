@@ -7,15 +7,97 @@ info:
     name: Proprietary
     identifier: LicenseRef-Proprietary
   description: |
-    Data Hub is the source of truth for companies, divisions and staff. It pushes changes here as they happen
-    (single records or batches) and sends a full snapshot of each type on a schedule.
+    Data Hub is the source of truth for JWH's companies, divisions and staff. It pushes changes here as they happen
+    and sends a full list of each type nightly. This reference covers every endpoint; the sections below cover the
+    rules, signing, and how batches, snapshots and jobs behave.
 
-    - Records are identified only by their **Data Hub ID** (`id`).
-    - Every record carries `updated_at`; anything older than what is stored is refused with `409`.
-    - All write requests are signed (see `PhonelistSignature`).
-    - Errors are [RFC 9457](https://www.rfc-editor.org/rfc/rfc9457) Problem Details.
+    ## The rules
 
-    See `docs/integration-guide.md` for how to use each endpoint.
+    1. **Records are identified by your ID.** `id` is the Data Hub ID of the company, division or staff member. We never
+       return our own IDs, and never match records by name.
+    2. **Every record carries `updated_at`**, as `YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM)`, e.g.
+       `2026-10-15T09:30:00+08:00` (fractions beyond 6 digits are cut to 6). Anything older than what we hold, or not newer
+       than when we deleted the record, is refused with `409`. Retries and late deliveries can't overwrite newer data or
+       bring back someone who has left.
+    3. **Every request is signed** with the shared secret (below).
+    4. **Send our format:** dates `YYYY-MM-DD`, booleans `true`/`false`, empty values `null`, field names exactly as in the
+       schemas. Unknown fields are ignored.
+    5. **Errors are [Problem Details](https://www.rfc-editor.org/rfc/rfc9457)** (`application/problem+json`); validation
+       errors list each field that failed.
+
+    ## Signing
+
+    Send `X-Phonelist-Signature: t=<unix seconds>,v1=<signature>`, where `<signature>` is the lowercase hex HMAC-SHA256,
+    keyed with the shared secret, of:
+
+    ```
+    <t>.<METHOD>.<path>.<raw body>
+    ```
+
+    - **path** is the path and query string exactly as requested, e.g. `/wp-json/phonelist/v2/staff/10423`. Because the
+      method and path are signed, a signature for one record can't be reused for another.
+    - **raw body** is the exact bytes sent; don't re-encode the JSON after signing. With no body, the string ends with `.`.
+    - `t` must be within 5 minutes of our clock (keep servers on NTP). A missing, malformed, expired or wrong signature
+      gets `401`.
+
+    Reference: `t = 1760000000`, secret `example-secret`, `PUT /wp-json/phonelist/v2/staff/10423`, body `{"id":"10423"}`
+    gives `t=1760000000,v1=a46069269697906d9e15425513a80bd4c083a5902d748fdb9d73dc4d91a49fed`.
+
+    ```php
+    $t = time();
+    $header = "t=$t,v1=" . hash_hmac('sha256', "$t.$method.$path.$body", $secret);
+    ```
+
+    ```python
+    t = int(time.time())
+    header = f"t={t},v1=" + hmac.new(secret.encode(), f"{t}.{method}.{path}.{body}".encode(), hashlib.sha256).hexdigest()
+    ```
+
+    ```js
+    const t = Math.floor(Date.now() / 1000);
+    const header = `t=${t},v1=` + crypto.createHmac('sha256', secret).update(`${t}.${method}.${path}.${body}`).digest('hex');
+    ```
+
+    ```bash
+    sig=$(printf '%s' "$t.PUT.$path.$body" | openssl dgst -sha256 -hmac "$secret" | sed 's/^.* //')
+    ```
+
+    The code samples beside each endpoint show the request itself; add this header to them. The "Test request" button
+    can't sign requests, so it gets `401` unless you paste a header computed for that exact request.
+
+    ## Which endpoint to use
+
+    | You want to… | Use |
+    |---|---|
+    | Create a record, or replace all of its fields (fields you leave out are cleared) | `PUT /{type}/{id}` |
+    | Change a few fields of a record we hold (`null` clears a field) | `PATCH /{type}/{id}` |
+    | Remove a record (`updated_at` in the body or query; encode `+` as `%2B`) | `DELETE /{type}/{id}` |
+    | Send up to 500 changes at once, any mix of types | `POST /batch` |
+    | Send the complete list of one type | `PUT /{type}` |
+
+    `{type}` is `companies`, `divisions` or `staff`. In a batch, operations run in order, each succeeds or fails on its
+    own, and a staff member can arrive before their division or manager: links are made once both exist.
+
+    ## Snapshots
+
+    Each record is upserted. Records we hold with your ID that aren't in the snapshot are deleted, unless they were
+    updated after the snapshot's newest `updated_at`; records the intranet made itself are never deleted. Send one of
+    each type nightly, divisions first, then staff.
+
+    **Safeguards:** an empty snapshot is refused (`422`). Nothing is deleted if any record has no usable `id` (a non-empty
+    string, not a number), if no record has a valid `updated_at`, or if the snapshot would delete more than 10 records
+    *and* more than 10% of those held; the job's results then end with an `error` entry saying why.
+
+    ## Jobs and retries
+
+    Batches and snapshots reply `202` straight away with a job; poll `GET /jobs/{id}` until `status` is `done` or
+    `failed`. Jobs run one at a time in the order they arrived (to the second), and their results are kept for 30 days.
+
+    - **Single records** are safe to resend: a repeat with the same `updated_at` is `unchanged`, an older one `409`.
+    - **Batches and snapshots:** send an `Idempotency-Key` header (unique per logical request, up to 100 characters).
+      Resending with the same key returns the original job (`200`). Keys are shared across all jobs and forgotten after
+      30 days.
+    - **Back-off:** on `503` or a network error, retry after 5 seconds, then 30 seconds, 2 minutes and 10 minutes.
 servers:
   - url: https://{host}/wp-json/phonelist/v2
     variables:

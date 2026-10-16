@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phonelist API</title>
+</head>
+<body>
+  <!-- The API reference, rendered by Scalar from openapi.yaml next to this file. Edit the spec, not this page. -->
+  <div id="app"></div>
+  <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.72.3"></script>
+  <script>
+    Scalar.createApiReference('#app', {
+      url: 'openapi.yaml',
+      defaultHttpClient: { targetKey: 'shell', clientKey: 'curl' },
+    });
+  </script>
+</body>
+</html>

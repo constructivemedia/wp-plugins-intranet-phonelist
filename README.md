@@ -4,7 +4,7 @@ A WordPress plugin holding JWH's companies, divisions and staff for the intranet
 
 - **Structure:** **Company** → **Division** → **Staff**. Data Hub owns the records. Which company a division belongs to is set in WordPress.
 - **Requirements:** PHP 8.1+, Advanced Custom Fields, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
-- **For Data Hub:** the API contract is [`docs/openapi.yaml`](docs/openapi.yaml), and the guide for JWH IT is [`docs/integration-guide.md`](docs/integration-guide.md).
+- **For Data Hub:** the API docs are `public/docs/index.html` (rendered by [Scalar](https://scalar.com) from [`public/docs/openapi.yaml`](public/docs/openapi.yaml), the contract and the one place to update). On a site they're at `/wp-content/plugins/wp-plugins-intranet-phonelist/public/docs/`.
 
 ## Local setup (DDEV)
 
@@ -170,7 +170,7 @@ Everything is under `/wp-json/phonelist/v2/`:
 | `GET /{companies\|divisions\|staff}` | Every record WordPress holds, in Data Hub's shape, sorted by name (`id` is null for records WordPress made, such as a company created for a new division). Staff can be filtered: `?name=&division_id=&department_code=` |
 | `GET /{companies\|divisions\|staff}/{id}` | One record, by Data Hub ID |
 | `GET /staff/{id}/team` | The people who report to that staff member, as records sorted by name |
-| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress (signed), see [`docs/integration-guide.md`](docs/integration-guide.md) |
+| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress (signed), see `public/docs/` |
 
 **Who can read:**
 - **Logged-in users:** on intranet pages, use the login cookie plus an `X-WP-Nonce` header (`wp_create_nonce('wp_rest')`). Scripts can use an Application Password instead.
