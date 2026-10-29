@@ -240,13 +240,14 @@ final class Ingestor
     }
 
     /**
-     * Delete a record, remembering it as deleted as of $updatedAt. A leaver's photo goes with them.
+     * Delete a record, remembering it as deleted as of $updatedAt. A leaver's photo goes with them; a company's
+     * (set by hand, maybe used elsewhere) stays in the Media Library.
      */
     private function remove(string $type, string $id, int $postId, string $updatedAt): void
     {
         $this->bury($type, $id, $updatedAt);
         $this->relations->beforeDelete($type, $postId);
-        $photo = (int) get_post_thumbnail_id($postId);
+        $photo = $type === 'staff' ? (int) get_post_thumbnail_id($postId) : 0;
         if ($photo) {
             wp_delete_attachment($photo, true);
         }

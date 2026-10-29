@@ -79,11 +79,10 @@ final class Phonelist
 
         $club = [];
         foreach ($terms as $term) {
-            $logo = (int) get_term_meta($term->term_id, 'logo', true);
             $club[$term->slug] = [
                 'title' => $term->name,
                 'description' => $term->description,
-                'logo' => $logo ? (wp_get_attachment_image_url($logo, 'full') ?: null) : null,
+                'logo' => self::imageUrl((int) get_term_meta($term->term_id, 'logo', true)),
                 'members' => [],
             ];
         }
@@ -115,9 +114,9 @@ final class Phonelist
         $birthdays = [];
 
         foreach (self::staffPosts() as $post) {
-            $next = get_post_meta($post->ID, 'hide_birthday', true) === '1' ? null : self::nextOccurrence((string) get_post_meta($post->ID, 'date_of_birth', true), $today);
+            $next = self::nextBirthday($post->ID, $today);
             if ($next && $today->diff($next)->days <= $days) {
-                $birthdays[] = self::toStaff($post, birthday: $next, daysUntil: $today->diff($next)->days);
+                $birthdays[] = self::toStaff($post, daysUntil: $today->diff($next)->days);
             }
         }
 
@@ -135,11 +134,9 @@ final class Phonelist
         $anniversaries = [];
 
         foreach (self::staffPosts() as $post) {
-            $start = (string) get_post_meta($post->ID, 'start_date', true);
-            $next = self::nextOccurrence($start, $today);
-            $years = $next ? (int) $next->format('Y') - (int) substr($start, 0, 4) : 0;
-            if ($years >= 1 && $today->diff($next)->days <= $days) {
-                $anniversaries[] = self::toStaff($post, daysUntil: $today->diff($next)->days, anniversary: $next, years: $years);
+            [$next] = self::nextAnniversary($post->ID, $today);
+            if ($next && $today->diff($next)->days <= $days) {
+                $anniversaries[] = self::toStaff($post, daysUntil: $today->diff($next)->days);
             }
         }
 
@@ -180,7 +177,9 @@ final class Phonelist
     }
 
     /**
-     * Every division, sorted by name: ['id' (Data Hub id, or null), 'postId', 'name', 'company', 'staff' => Staff[]].
+     * Every division, sorted by name: ['id' (Data Hub id, or null), 'postId', 'name', 'phone', 'addressLine1',
+     * 'addressLine2', 'postcode', 'postalAddress', 'company' => (as companies(), without divisions and staff) or null,
+     * 'staff' => Staff[]].
      */
     public static function divisions(): array
     {
@@ -190,26 +189,38 @@ final class Phonelist
         }
 
         return array_map(function (WP_Post $post) use ($staff): array {
-            $id = (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true);
-            $company = (int) get_post_meta($post->ID, 'company', true);
+            $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
+            $id = $meta(PostTypes::SOURCE_ID);
 
-            return ['id' => $id ?: null, 'postId' => $post->ID, 'name' => $post->post_title, 'company' => $company ? get_post_field('post_title', $company, 'raw') : '', 'staff' => $staff[$id] ?? []];
+            return [
+                'id' => $id ?: null,
+                'postId' => $post->ID,
+                'name' => $post->post_title,
+                'phone' => $meta('phone'),
+                'addressLine1' => $meta('address_line1'),
+                'addressLine2' => $meta('address_line2'),
+                'postcode' => $meta('postcode'),
+                'postalAddress' => $meta('postal_address'),
+                'company' => self::company((int) $meta('company')),
+                'staff' => $id === '' ? [] : ($staff[$id] ?? []), // No id, no staff: '' would be everyone without a division.
+            ];
         }, get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
     }
 
     /**
-     * Every company, sorted by name: ['name', 'divisions' => (as divisions()), 'staff' => Staff[] across them, by name].
+     * Every company, sorted by name: ['id' (Data Hub id, or null), 'postId', 'name', 'photoId', 'photoUrl' (the
+     * featured image, set in the editor; null without one), 'divisions' => (as divisions()), 'staff' => Staff[] across them, by name].
      */
     public static function companies(): array
     {
         $divisions = self::divisions();
 
         return array_map(function (WP_Post $post) use ($divisions): array {
-            $theirs = array_values(array_filter($divisions, fn (array $division): bool => (int) get_post_meta($division['postId'], 'company', true) === $post->ID));
+            $theirs = array_values(array_filter($divisions, fn (array $division): bool => ($division['company']['postId'] ?? 0) === $post->ID));
             $staff = array_merge(...array_column($theirs, 'staff'));
             usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
 
-            return ['name' => $post->post_title, 'divisions' => $theirs, 'staff' => $staff];
+            return self::company($post->ID) + ['divisions' => $theirs, 'staff' => $staff];
         }, get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
     }
 
@@ -256,13 +267,66 @@ final class Phonelist
         return $query->posts;
     }
 
-    private static function toStaff(WP_Post $post, ?DateTimeImmutable $birthday = null, ?int $daysUntil = null, ?DateTimeImmutable $anniversary = null, ?int $years = null): Staff
+    /**
+     * Next birthday from date_of_birth, or null if unknown or hidden in HR (hide_birthday).
+     */
+    private static function nextBirthday(int $postId, DateTimeImmutable $today): ?DateTimeImmutable
+    {
+        return get_post_meta($postId, 'hide_birthday', true) === '1' ? null : self::nextOccurrence((string) get_post_meta($postId, 'date_of_birth', true), $today);
+    }
+
+    /**
+     * Next work anniversary (a whole year or more since start_date) and the years it marks, or [null, null].
+     *
+     * @return array{0: ?DateTimeImmutable, 1: ?int}
+     */
+    private static function nextAnniversary(int $postId, DateTimeImmutable $today): array
+    {
+        $start = (string) get_post_meta($postId, 'start_date', true);
+        $next = self::nextOccurrence($start, $today);
+        $years = $next ? (int) $next->format('Y') - (int) substr($start, 0, 4) : 0;
+
+        return $years >= 1 ? [$next, $years] : [null, null];
+    }
+
+    /**
+     * A company as ['id' (Data Hub id, or null), 'postId', 'name', 'photoId', 'photoUrl'], or null for no company.
+     */
+    private static function company(int $postId): ?array
+    {
+        $post = $postId ? get_post($postId) : null;
+        if (!$post) {
+            return null;
+        }
+        $photoId = (int) get_post_thumbnail_id($post);
+
+        return [
+            'id' => (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true) ?: null,
+            'postId' => $post->ID,
+            'name' => $post->post_title,
+            'photoId' => $photoId ?: null,
+            'photoUrl' => self::imageUrl($photoId),
+        ];
+    }
+
+    /**
+     * Full-size URL of a Media Library image, or null.
+     */
+    private static function imageUrl(int $attachmentId): ?string
+    {
+        return $attachmentId ? (wp_get_attachment_image_url($attachmentId, 'full') ?: null) : null;
+    }
+
+    private static function toStaff(WP_Post $post, ?int $daysUntil = null): Staff
     {
         $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
         $title = fn (string $link): string => (int) $meta($link) ? get_post_field('post_title', (int) $meta($link), 'raw') : '';
         $photoId = (int) get_post_thumbnail_id($post->ID);
         $club = get_the_terms($post, PostTypes::CLUB_TAXONOMY); // Cached by the staff query.
-        $leave = DateTimeImmutable::createFromFormat('!Ymd', $meta('on_leave_until'), wp_timezone()) ?: null;
+        $date = fn (string $key): ?DateTimeImmutable => DateTimeImmutable::createFromFormat('!Ymd', $meta($key), wp_timezone()) ?: null;
+        $today = new DateTimeImmutable('today', wp_timezone());
+        $leave = $date('on_leave_until');
+        [$anniversary, $years] = self::nextAnniversary($post->ID, $today);
 
         return new Staff(
             id: $meta(PostTypes::SOURCE_ID),
@@ -281,13 +345,14 @@ final class Phonelist
             departmentCode: $meta('department_code'),
             department: $meta('department'),
             reportsTo: $meta('reports_to') === $meta(PostTypes::SOURCE_ID) ? '' : $meta('reports_to'), // Never their own manager.
-            onLeaveUntil: $leave && $leave >= new DateTimeImmutable('today', wp_timezone()) ? $leave : null,
-            birthday: $birthday,
+            onLeaveUntil: $leave && $leave >= $today ? $leave : null,
+            birthday: self::nextBirthday($post->ID, $today),
             daysUntil: $daysUntil,
             anniversary: $anniversary,
             years: $years,
+            startDate: $date('start_date'),
             photoId: $photoId ?: null,
-            photoUrl: $photoId ? (wp_get_attachment_image_url($photoId, 'full') ?: null) : null,
+            photoUrl: self::imageUrl($photoId),
             club: is_array($club) ? $club[0]->slug : null,
         );
     }

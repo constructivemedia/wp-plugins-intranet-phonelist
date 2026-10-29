@@ -192,6 +192,8 @@ try {
     $found = Phonelist::staff(name: 'zelda test');
     assert(count($found) === 1 && $found[0]->departmentCode === 'T9' && $found[0]->phone === '+61894647800' && $found[0]->extension === '1234' && $found[0]->id === 'test-t1');
     assert($found[0]->onLeaveUntil?->format('Y-m-d') === $day('+20 days'));
+    assert($found[0]->birthday?->format('Y-m-d') === $day('+1 day') && $found[0]->daysUntil === null);         // every staff() result has their birthday...
+    assert(Phonelist::staff(name: 'zora test')[0]->birthday === null);                                         // ...unless hidden
     assert(count(Phonelist::staff(name: 'Testerson', department: 'T9')) === 1);
     $birthdays = array_map(fn ($person) => $person->id, Phonelist::birthdays(1));
     assert(in_array('test-t1', $birthdays, true) && !in_array('test-t2', $birthdays, true));
@@ -207,6 +209,9 @@ try {
     $in->put('staff', 'test-a2', ['first_name' => 'New', 'last_name' => 'Testerson', 'start_date' => $day('+1 day')] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     $anniversaries = array_filter(Phonelist::anniversaries(1), fn ($person) => str_starts_with($person->id, 'test-a'));
     assert(count($anniversaries) === 1 && current($anniversaries)->id === 'test-a1' && current($anniversaries)->years === 5 && current($anniversaries)->daysUntil === 1);
+    $ann = Phonelist::staff(name: 'ann testerson')[0];
+    assert($ann->years === 5 && $ann->anniversary?->format('Y-m-d') === $day('+1 day') && $ann->startDate?->format('Y-m-d') === $day('+1 day -5 years'));
+    assert(Phonelist::staff(name: 'new testerson')[0]->anniversary === null && Phonelist::staff(name: 'new testerson')[0]->startDate !== null); // not before a year
 
     // Org chart: a manager's team and a person's manager, from reports_to.
     $in->put('staff', 'test-o1', ['first_name' => 'Boss', 'last_name' => 'Testerson'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
@@ -218,17 +223,25 @@ try {
     $in->put('staff', 'test-o4', ['first_name' => 'Cee', 'last_name' => 'Testerson', 'reports_to' => 'test-o4'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     assert(Phonelist::manager('test-o4') === null && Phonelist::team('test-o4') === [] && Phonelist::team('') === []); // never their own manager
 
-    // Divisions and companies, with their staff.
-    $in->put('divisions', 'test-LD', ['name' => 'Test Listing Division', 'updated_at' => $t1], 'test-run', 'api');
+    // Divisions and companies, with their staff; a division carries its company, photo included.
+    $in->put('divisions', 'test-LD', ['name' => 'Test Listing Division', 'phone' => '9464 7800', 'updated_at' => $t1], 'test-run', 'api');
     $in->put('staff', 'test-l1', ['first_name' => 'Lia', 'last_name' => 'Testerson', 'division_id' => 'test-LD'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $logo = fn (int $postId): int => set_post_thumbnail($postId, wp_insert_attachment(['post_mime_type' => 'image/jpeg', 'post_title' => 'Test logo'], 'test-logo.jpg')) ? get_post_thumbnail_id($postId) : 0;
+    $listingCompany = $logo($link($in->postId('divisions', 'test-LD'), 'company'));
     $division = current(array_filter(Phonelist::divisions(), fn (array $division): bool => $division['id'] === 'test-LD'));
-    assert($division['name'] === 'Test Listing Division' && $division['company'] === 'Test Listing Division' && array_map(fn ($person) => $person->id, $division['staff']) === ['test-l1']);
+    assert($division['name'] === 'Test Listing Division' && $division['phone'] === '+61894647800' && array_map(fn ($person) => $person->id, $division['staff']) === ['test-l1']);
+    assert($division['company']['name'] === 'Test Listing Division' && $division['company']['photoId'] === $listingCompany && str_ends_with((string) $division['company']['photoUrl'], 'test-logo.jpg'));
     $company = current(array_filter(Phonelist::companies(), fn (array $company): bool => $company['name'] === 'Test Listing Division'));
-    assert(array_column($company['divisions'], 'id') === ['test-LD'] && $company['staff'][0]->id === 'test-l1');
+    assert(array_column($company['divisions'], 'id') === ['test-LD'] && $company['staff'][0]->id === 'test-l1' && $company['photoId'] === $listingCompany);
     $in->put('companies', 'test-LC', ['name' => 'Test Listing Division', 'updated_at' => $t1], 'test-run', 'api'); // a second company with the same name
     $withDivision = array_filter(Phonelist::companies(), fn (array $company): bool => in_array('test-LD', array_column($company['divisions'], 'id'), true));
     assert(count($withDivision) === 1);                                                                    // the division belongs to one of them only
+    $deletedLogo = $logo($in->postId('companies', 'test-LC'));
     $in->delete('companies', 'test-LC', $t2, 'test-run', 'api');
+    assert(get_post($deletedLogo) !== null);                                                              // a company's photo outlives it (set by hand)
+    wp_delete_attachment($deletedLogo, true);
+    $noId = wp_insert_post(['post_type' => PostTypes::DIVISION, 'post_status' => 'publish', 'post_title' => 'Test No Id Division']);
+    assert(current(array_filter(Phonelist::divisions(), fn (array $division): bool => $division['postId'] === $noId))['staff'] === []); // not everyone without a division
 
     // Upgrade from v1: meta renamed in place (with ACF references), the position-based manager link becomes reports_to, idempotent.
     $v1 = fn (string $title, array $meta): int => wp_insert_post(['post_type' => PostTypes::STAFF, 'post_status' => 'publish', 'post_title' => $title, 'meta_input' => $meta]);

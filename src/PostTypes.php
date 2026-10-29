@@ -136,7 +136,7 @@ final class PostTypes
                 'public' => false,
                 'show_ui' => true,
                 'show_in_menu' => self::MENU,
-                'supports' => $type === self::STAFF ? ['title', 'thumbnail'] : ['title'],
+                'supports' => $type === self::DIVISION ? ['title'] : ['title', 'thumbnail'], // Staff and company photos.
                 'map_meta_cap' => true,
                 'capabilities' => $type === self::COMPANY ? $adminOnly : $pushedOnly,
             ]);

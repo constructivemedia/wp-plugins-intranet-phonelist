@@ -36,13 +36,14 @@ final class Staff implements JsonSerializable
         public readonly string $reportsTo = '',
         /** Last day of their current leave; null when not on leave. */
         public readonly ?DateTimeImmutable $onLeaveUntil = null,
-        /** Next birthday (no year of birth or age is exposed). Set by Phonelist::birthdays(). */
+        /** Next birthday (no year of birth or age is exposed); null when unknown or hidden in HR (hide_birthday). */
         public readonly ?DateTimeImmutable $birthday = null,
         /** Days until $birthday or $anniversary, 0 = today. Set by Phonelist::birthdays() and anniversaries(). */
         public readonly ?int $daysUntil = null,
-        /** Next work anniversary, and the years it marks. Set by Phonelist::anniversaries(). */
+        /** Next work anniversary, and the years it marks; null before their first. */
         public readonly ?DateTimeImmutable $anniversary = null,
         public readonly ?int $years = null,
+        public readonly ?DateTimeImmutable $startDate = null,
         /** Media Library attachment, e.g. wp_get_attachment_image($person->photoId, 'thumbnail'). Null without a photo. */
         public readonly ?int $photoId = null,
         /** Full-size photo URL. Null without a photo. */
@@ -85,6 +86,7 @@ final class Staff implements JsonSerializable
         $data['birthday'] = $this->birthday?->format('Y-m-d');
         $data['onLeaveUntil'] = $this->onLeaveUntil?->format('Y-m-d');
         $data['anniversary'] = $this->anniversary?->format('Y-m-d');
+        $data['startDate'] = $this->startDate?->format('Y-m-d');
 
         return array_filter($data, fn ($value): bool => $value !== null);
     }

@@ -4,7 +4,7 @@
  * Description: JWH's companies, divisions and staff for the intranet phone list, pushed in by Data Hub.
  * Version:     2.0.0
  * Author:      Constructive Media
- * Requires PHP: 8.1
+ * Requires PHP: 8.4
  * Requires Plugins: advanced-custom-fields
  * Text Domain: intranet-phonelist
  */

@@ -3,7 +3,7 @@
 A WordPress plugin holding JWH's companies, divisions and staff for the intranet phone list. JWH's Data Hub pushes them in through a signed REST API, and theme developers read them in PHP or over REST.
 
 - **Structure:** **Company** → **Division** → **Staff**. Data Hub owns the records. Which company a division belongs to is set in WordPress.
-- **Requirements:** PHP 8.1+, Advanced Custom Fields, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
+- **Requirements:** PHP 8.4+, Advanced Custom Fields, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
 - **For Data Hub:** the API docs are `public/docs/index.html` (rendered by [Scalar](https://scalar.com) from [`public/docs/openapi.yaml`](public/docs/openapi.yaml), the contract and the one place to update). On a site they're at `/wp-content/plugins/wp-plugins-intranet-phonelist/public/docs/`.
 
 ## Local setup (DDEV)
@@ -76,7 +76,7 @@ Stored as post IDs, so renames never need updating:
 - **When a staff member is created:** if Data Hub sent a `photo_url`, it's downloaded. Otherwise a file named `first_last_divisionid.jpg` is looked for in `INTRANET_PHONELIST_PHOTOS_DIR`; only the top level of the folder is scanned.
 - **After that, photos are managed by hand.** The only exception is when Data Hub sends a different `photo_url`, which replaces the photo.
 - **A failed download** is logged as a warning; the record itself is still saved.
-- **Leavers:** their photo is deleted with them.
+- **Leavers:** their photo is deleted with them. (A company's photo is set by hand, and is kept if the company is deleted.)
 - **Gaps:** **Settings → Phonelist → Photos** lists staff without a photo and the file names looked for.
 
 Locally the folder is `assets/staffPhotos/`, which is gitignored: never commit staff photos.
@@ -109,9 +109,12 @@ Phonelist::anniversaries(days: 7);   // work anniversaries (whole years since st
 Phonelist::onLeave();                // on leave (last day of leave is today or later), soonest back first: ->onLeaveUntil
 Phonelist::team('10007');            // who reports to staff 10007 (by Data Hub id), by name
 Phonelist::manager('10423');         // their manager, or null
-Phonelist::divisions();              // [['id', 'name', 'company', 'staff' => Staff[]], …] by name
-Phonelist::companies();              // [['name', 'divisions' => [...], 'staff' => Staff[]], …] by name
+Phonelist::divisions();              // [['id', 'postId', 'name', 'phone', 'addressLine1', 'addressLine2', 'postcode', 'postalAddress',
+                                     //   'company' => ['id', 'postId', 'name', 'photoId', 'photoUrl'] or null, 'staff' => Staff[]], …] by name
+Phonelist::companies();              // [['id', 'postId', 'name', 'photoId', 'photoUrl', 'divisions' => [...], 'staff' => Staff[]], …] by name
 ```
+
+A company's photo (e.g. its logo) is its **Featured image**, set by hand in the company editor; `photoId` and `photoUrl` are null without one.
 
 ### JWH Club
 
@@ -145,16 +148,18 @@ add_filter('intranet_phonelist_club', function (array $club): array {
 
 ### Staff objects
 
-`staff()`, `birthdays()` and `club()` return `Staff` objects with these read-only properties:
+People come back from every method above as `Staff` objects, with these read-only properties:
 - `id` (the Data Hub ID), `postId`
 - `name`, `firstName`, `lastName`
 - `position`, `email`, `mobile`, `phone` (direct), `extension` (VoIP)
 - `divisionId`, `division`, `company`, `reportsTo` (their manager's staff id)
 - `departmentCode`, `department`
 - `onLeaveUntil` (the last day of their leave, or null when not on leave)
+- `birthday` (their next birthday; null when unknown or hidden in HR)
+- `startDate`; `anniversary` and `years` (their next work anniversary and the years it marks; null before their first)
 - `photoId` (for `wp_get_attachment_image()`), `photoUrl` (full size); both null without a photo
 - `club` (the level's slug: `'lifetime-club'`, `'40-year-club'` …, or null)
-- `birthday`, `daysUntil` (from `birthdays()`); `anniversary`, `years`, `daysUntil` (from `anniversaries()`)
+- `daysUntil` (from `birthdays()` and `anniversaries()`: days until that birthday or anniversary, 0 = today)
 
 Date of birth, home phone and other HR fields are never exposed.
 
