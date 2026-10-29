@@ -2,6 +2,7 @@
 
 namespace ConstructiveMedia\IntranetPhonelist;
 
+use ConstructiveMedia\IntranetPhonelist\Ingest\PhoneNumbers;
 use DateTimeImmutable;
 use WP_Post;
 use WP_Query;
@@ -312,6 +313,26 @@ final class Phonelist
     /**
      * Full-size URL of a Media Library image, or null.
      */
+    /**
+     * A phone number for showing: '+61437793226' → '0437 793 226', '+61894647800' → '(08) 9464 7800'.
+     * Numbers are stored as E.164, which is what a tel: link wants.
+     */
+    public static function phone(string $number): string
+    {
+        return PhoneNumbers::display($number);
+    }
+
+    /**
+     * Position without its leading division code: 'PHM Sales Manager' → 'Sales Manager'. The code is often not
+     * their own division's, so any three capitals go.
+     *
+     * @internal Public for tests/plan-check.php.
+     */
+    public static function jobTitle(string $position): string
+    {
+        return preg_replace('/^[A-Z]{3}\s+/', '', $position);
+    }
+
     private static function imageUrl(int $attachmentId): ?string
     {
         return $attachmentId ? (wp_get_attachment_image_url($attachmentId, 'full') ?: null) : null;
@@ -335,6 +356,7 @@ final class Phonelist
             firstName: $meta('preferred_name') !== '' ? $meta('preferred_name') : $meta('first_name'),
             lastName: $meta('last_name'),
             position: $meta('position'),
+            jobTitle: (string) apply_filters('intranet_phonelist_job_title', self::jobTitle($meta('position')), $meta('position'), $post->ID),
             email: $meta('email'),
             mobile: $meta('mobile'),
             phone: $meta('phone'),

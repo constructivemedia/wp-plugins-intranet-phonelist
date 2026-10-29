@@ -112,6 +112,9 @@ Phonelist::manager('10423');         // their manager, or null
 Phonelist::divisions();              // [['id', 'postId', 'name', 'phone', 'addressLine1', 'addressLine2', 'postcode', 'postalAddress',
                                      //   'company' => ['id', 'postId', 'name', 'photoId', 'photoUrl'] or null, 'staff' => Staff[]], …] by name
 Phonelist::companies();              // [['id', 'postId', 'name', 'photoId', 'photoUrl', 'divisions' => [...], 'staff' => Staff[]], …] by name
+
+// Phone numbers come back as E.164, for tel: links; Phonelist::phone() formats one for showing.
+echo "<a href=\"tel:{$person->mobile}\">" . Phonelist::phone($person->mobile) . '</a>';   // 0437 793 226, (08) 9464 7800
 ```
 
 A company's photo (e.g. its logo) is its **Featured image**, set by hand in the company editor; `photoId` and `photoUrl` are null without one.
@@ -151,7 +154,8 @@ add_filter('intranet_phonelist_club', function (array $club): array {
 People come back from every method above as `Staff` objects, with these read-only properties:
 - `id` (the Data Hub ID), `postId`
 - `name`, `firstName`, `lastName`
-- `position`, `email`, `mobile`, `phone` (direct), `extension` (VoIP)
+- `position` (as in HR: `PHM Sales Manager`), `jobTitle` (without the division code: `Sales Manager`)
+- `email`, `mobile`, `phone` (direct), `extension` (VoIP)
 - `divisionId`, `division`, `company`, `reportsTo` (their manager's staff id)
 - `departmentCode`, `department`
 - `onLeaveUntil` (the last day of their leave, or null when not on leave)
@@ -162,6 +166,14 @@ People come back from every method above as `Staff` objects, with these read-onl
 - `daysUntil` (from `birthdays()` and `anniversaries()`: days until that birthday or anniversary, 0 = today)
 
 Date of birth, home phone and other HR fields are never exposed.
+
+`jobTitle` drops a leading three-capital code. For a position with no code that starts with three capitals, or that needs other cleaning, use a filter in the theme:
+
+```php
+add_filter('intranet_phonelist_job_title', function (string $jobTitle, string $position, int $postId): string {
+    return str_starts_with($position, 'ICT ') ? $position : $jobTitle; // 'ICT Support Officer' is not a code
+}, 10, 3);
+```
 
 **Changes from v1:** `extension` is now the VoIP extension, and the direct number is `phone`. Also renamed: `divisionCode` → `divisionId`, `tag` → `departmentCode`, `tagDescription` → `department`, and `staff(tag:)` → `staff(department:)`.
 

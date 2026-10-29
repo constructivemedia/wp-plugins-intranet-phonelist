@@ -55,9 +55,20 @@ assert($next('19880229', '2026-10-13') === '2027-02-28'); // 2027 not leap
 assert($next('19880229', '2027-10-13') === '2028-02-29'); // 2028 leap
 assert($next('', '2026-10-13') === null);
 
+// Phones for showing: national format; anything unreadable as it is.
+assert(Phonelist::phone('+61437793226') === '0437 793 226' && Phonelist::phone('+61894647800') === '(08) 9464 7800');
+assert(Phonelist::phone('ext 12') === 'ext 12' && Phonelist::phone('') === '');
+
+// Job title: a leading three-capital code goes, whoever's division it is; nothing else does.
+assert(Phonelist::jobTitle('PHM Sales Manager') === 'Sales Manager');
+assert(Phonelist::jobTitle('WCB JWH Group Special Projects Assistant') === 'JWH Group Special Projects Assistant');
+assert(Phonelist::jobTitle('Sales Manager') === 'Sales Manager');
+assert(Phonelist::jobTitle('PHM') === 'PHM' && Phonelist::jobTitle('') === '');
+assert(Phonelist::jobTitle('IT Manager') === 'IT Manager' && Phonelist::jobTitle('Php Developer') === 'Php Developer');
+
 // Staff filters: any word of the full name starts with (case-insensitive), exact division and department codes, AND-combined.
 $staffMember = fn (string $first, string $last, string $divisionId = 'PHM', string $department = '') => new Staff(
-    id: '1', postId: 1, name: "$first $last", firstName: $first, lastName: $last, position: '', email: '', mobile: '', phone: '',
+    id: '1', postId: 1, name: "$first $last", firstName: $first, lastName: $last, position: '', jobTitle: '', email: '', mobile: '', phone: '',
     extension: '', divisionId: $divisionId, division: '', company: '', departmentCode: $department, department: '',
 );
 $person = $staffMember('Jane', 'Citizen', 'JWH', '08');

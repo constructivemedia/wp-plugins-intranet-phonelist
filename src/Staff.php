@@ -18,7 +18,10 @@ final class Staff implements JsonSerializable
         public readonly string $name,
         public readonly string $firstName,
         public readonly string $lastName,
+        /** As in HR, e.g. 'PHM Sales Manager'. */
         public readonly string $position,
+        /** $position without its division code, e.g. 'Sales Manager'. */
+        public readonly string $jobTitle,
         public readonly string $email,
         public readonly string $mobile,
         /** Direct phone number. */
@@ -67,6 +70,7 @@ final class Staff implements JsonSerializable
             firstName: $parts[0],
             lastName: $parts[1] ?? '',
             position: '',
+            jobTitle: '',
             email: '',
             mobile: '',
             phone: '',

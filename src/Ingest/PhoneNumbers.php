@@ -39,4 +39,23 @@ final class PhoneNumbers
 
         return $util->isValidNumber($number) ? $util->format($number, PhoneNumberFormat::E164) : null;
     }
+
+    /**
+     * For showing: '+61437793226' → '0437 793 226', '+61894647800' → '(08) 9464 7800'. Unreadable numbers (and
+     * every number without the library) come back as they are.
+     */
+    public static function display(string $number): string
+    {
+        if ($number === '' || !class_exists(PhoneNumberUtil::class)) {
+            return $number;
+        }
+        $util = PhoneNumberUtil::getInstance();
+        try {
+            $parsed = $util->parse($number, self::REGION);
+        } catch (NumberParseException) {
+            return $number;
+        }
+
+        return $util->isValidNumber($parsed) ? $util->format($parsed, PhoneNumberFormat::NATIONAL) : $number;
+    }
 }
