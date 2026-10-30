@@ -63,9 +63,11 @@ Stored as post IDs, so renames never need updating:
 | `division` | staff | the division | `division_id` |
 | `company` | staff | the company | the division's Company |
 | `manager` | staff | the manager | `reports_to` (the manager's staff id) |
-| `company` | division | the company | set by hand; new divisions get the company with the same name, created if needed |
+| `company` | division | the company | new divisions get theirs from `Relations::COMPANIES` (else one with the division's name), created if needed; can be changed by hand |
 
 - **When they're set:** links are made when a record is written, in whatever order records arrive. Staff waiting on a new division or manager are linked when it arrives.
+- **Which company:** `Relations::COMPANIES` lists each company's division IDs. Add a new division there before Data Hub first sends it, or set its company by hand afterwards.
+- **Updating to 2.2:** divisions that were given a company named after themselves move to their listed company, and those companies are deleted once empty (unless Data Hub sent them). Companies set by hand stay.
 - **Moving a division:** saving it in the admin re-points everyone in it to its company.
 - **A full snapshot** finishes by rechecking every link.
 - **In the editor:** the fields are hidden; the **Relationships** box shows them, plus direct reports.
@@ -109,15 +111,32 @@ Phonelist::anniversaries(days: 7);   // work anniversaries (whole years since st
 Phonelist::onLeave();                // on leave (last day of leave is today or later), soonest back first: ->onLeaveUntil
 Phonelist::team('10007');            // who reports to staff 10007 (by Data Hub id), by name
 Phonelist::manager('10423');         // their manager, or null
-Phonelist::divisions();              // [['id', 'postId', 'name', 'phone', 'addressLine1', 'addressLine2', 'postcode', 'postalAddress',
-                                     //   'company' => ['id', 'postId', 'name', 'photoId', 'photoUrl'] or null, 'staff' => Staff[]], …] by name
-Phonelist::companies();              // [['id', 'postId', 'name', 'photoId', 'photoUrl', 'divisions' => [...], 'staff' => Staff[]], …] by name
+Phonelist::divisions();              // Division objects with their ->company and ->staff, by name
+Phonelist::companies();              // Company objects with their ->divisions and ->staff, by name
+
+foreach (Phonelist::companies() as $company) {
+    echo wp_get_attachment_image($company->photoId, 'medium') . "<h2>{$company->name}</h2>";
+    foreach ($company->divisions as $division) {
+        echo "<h3>{$division->name}</h3>" . Phonelist::phone($division->phone);
+        foreach ($division->staff as $person) {
+            echo "{$person->name}, {$person->jobTitle}";
+        }
+    }
+}
 
 // Phone numbers come back as E.164, for tel: links; Phonelist::phone() formats one for showing.
 echo "<a href=\"tel:{$person->mobile}\">" . Phonelist::phone($person->mobile) . '</a>';   // 0437 793 226, (08) 9464 7800
 ```
 
+### Division and Company objects
+
+Read-only, like `Staff`:
+- **`Division`:** `id` (the Data Hub ID, or null), `postId`, `name`, `phone`, `addressLine1`, `addressLine2`, `postcode`, `postalAddress`, `company` (or null), `staff` (`Staff[]`)
+- **`Company`:** `id` (null for a company created from a division's name), `postId`, `name`, `photoId`, `photoUrl`, `divisions` (`Division[]`), `staff` (`Staff[]`, everyone across its divisions)
+
 A company's photo (e.g. its logo) is its **Featured image**, set by hand in the company editor; `photoId` and `photoUrl` are null without one.
+
+A division's `company` has its own details but `divisions` and `staff` are null, since they'd loop back to the division. Use `companies()` to walk down from a company.
 
 ### JWH Club
 

@@ -8,12 +8,27 @@ use wpdb;
  * Staff links (division, company, manager) and each division's company, stored as post IDs so Admin Columns and
  * queries can use them. Set when records are written, in whatever order they arrive:
  * - a staff member links to their division, its company and their manager, if those exist yet;
- * - a new division gets a company (by name, created if needed) and links the staff waiting on it;
+ * - a new division gets its company from COMPANIES (else one named after it; created if needed) and links the staff
+ *   waiting on it;
  * - a new staff member becomes the manager of anyone already reporting to them.
  * The one listener: saving a division in the admin re-points its staff to its company.
  */
 final class Relations
 {
+    /** Company => its divisions' Data Hub IDs. A division not listed gets a company named after it. */
+    public const COMPANIES = [
+        'JWH Group' => ['JWH', 'JIT'],
+        'WA Country Builders' => ['GTN', 'BSN', 'BNB', 'ALB', 'CDR'],
+        'Active Plumbing' => ['ACT', 'ABN', 'AGH'],
+        'Residential Attitudes' => ['RES', 'RAT'],
+        'Plunkett Homes' => ['PHM'],
+        'Rural Building Company' => ['RBC'],
+        'Oswald Homes' => ['OSW'],
+        'Constructive Media' => ['CME'],
+        'Ceiling Force' => ['CEF'],
+        'Roofstyle' => ['ROO'],
+    ];
+
     public function __construct(private readonly wpdb $db)
     {
     }
@@ -44,8 +59,7 @@ final class Relations
             }
         } elseif ($type === 'divisions') {
             if ($created && !(int) get_post_meta($postId, 'company', true)) {
-                // A company named after the division, unless 'intranet_phonelist_new_division_company' names another (the Oracle import does).
-                $name = (string) apply_filters('intranet_phonelist_new_division_company', get_post_field('post_title', $postId, 'raw'), $id);
+                $name = $this->defaultCompany($postId);
                 [$companyId, $new] = $this->companyFor($name);
                 PostTypes::store($postId, PostTypes::fieldKey(PostTypes::DIVISION, 'company'), 'company', $companyId ?: '');
                 $changes['company'] = ['from' => null, 'to' => $name . ($new ? ' (new company)' : '')];
@@ -98,6 +112,49 @@ final class Relations
         foreach ($ids as $staff) {
             $this->linkStaff($staff);
         }
+    }
+
+    /**
+     * Put each division whose company was made for it (named after it, the default before 2.2) or is missing into
+     * its default company, then delete the companies made for divisions that none uses any more. Companies set by
+     * hand and companies from Data Hub stay. Returns how many divisions moved.
+     */
+    public function applyDefaultCompanies(): int
+    {
+        $moved = 0;
+        foreach (get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'post_status' => 'any']) as $division) {
+            $current = (int) get_post_meta($division->ID, 'company', true);
+            if ($current && get_post_field('post_title', $current, 'raw') !== $division->post_title) {
+                continue; // Set by hand.
+            }
+            [$companyId] = $this->companyFor($this->defaultCompany($division->ID));
+            if ($companyId && $companyId !== $current) {
+                PostTypes::store($division->ID, PostTypes::fieldKey(PostTypes::DIVISION, 'company'), 'company', $companyId);
+                $this->refreshDivision($division->ID);
+                $moved++;
+            }
+        }
+
+        foreach (get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'post_status' => 'any', 'fields' => 'ids']) as $company) {
+            if (get_post_meta($company, PostTypes::SOURCE_ID, true) === '' && !$this->postsWhere([PostTypes::DIVISION], 'company', (string) $company)) {
+                $this->beforeDelete('companies', $company);
+                wp_delete_post($company, true);
+            }
+        }
+
+        return $moved;
+    }
+
+    /**
+     * A division's company name: from COMPANIES, else the division's own name. The
+     * 'intranet_phonelist_new_division_company' filter can name another.
+     */
+    private function defaultCompany(int $divisionPostId): string
+    {
+        $id = (string) get_post_meta($divisionPostId, PostTypes::SOURCE_ID, true);
+        $listed = array_keys(array_filter(self::COMPANIES, fn (array $divisions): bool => in_array($id, $divisions, true)));
+
+        return (string) apply_filters('intranet_phonelist_new_division_company', $listed[0] ?? get_post_field('post_title', $divisionPostId, 'raw'), $id);
     }
 
     /**

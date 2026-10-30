@@ -10,6 +10,7 @@ use ConstructiveMedia\IntranetPhonelist\Api\Signature;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
+use ConstructiveMedia\IntranetPhonelist\Relations;
 use ConstructiveMedia\IntranetPhonelist\Schema;
 use ConstructiveMedia\IntranetPhonelist\Staff;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
@@ -167,6 +168,7 @@ assert($start('01Apr27') === '2027-04-01' && $start('20260231') === null);      
 $division = Adapter::division(['DIV_CODE' => 'BNB', 'DIV_NAME' => 'W.A. COUNTRY BUILDERS ( BUNBURY)', 'PHONE' => '9721 0000', 'DIV_ADDR1' => '1 Main St', 'DIV_ADDR2' => '', 'DIV_PCODE' => '6230', 'POSTAL_ADDRESS' => ''], '2026-10-15T09:00:00+08:00');
 assert($division['id'] === 'BNB' && $division['name'] === 'W.A. Country Builders (Bunbury)' && $division['address_line2'] === null);
 assert(Schema::validate('divisions', $division, false)['errors'] === []);
-assert(Adapter::companyFor('BNB') === 'WA Country Builders' && Adapter::companyFor('NEW') === null);
+$listed = array_merge(...array_values(Relations::COMPANIES));
+assert(count($listed) === count(array_unique($listed)));                                       // a division is in one company only
 
 echo "plan-check OK\n";

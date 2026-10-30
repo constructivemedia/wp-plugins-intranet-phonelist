@@ -178,9 +178,9 @@ final class Phonelist
     }
 
     /**
-     * Every division, sorted by name: ['id' (Data Hub id, or null), 'postId', 'name', 'phone', 'addressLine1',
-     * 'addressLine2', 'postcode', 'postalAddress', 'company' => (as companies(), without divisions and staff) or null,
-     * 'staff' => Staff[]].
+     * Every division with its staff, sorted by name.
+     *
+     * @return Division[]
      */
     public static function divisions(): array
     {
@@ -189,39 +189,41 @@ final class Phonelist
             $staff[$person->divisionId][] = $person;
         }
 
-        return array_map(function (WP_Post $post) use ($staff): array {
+        return array_map(function (WP_Post $post) use ($staff): Division {
             $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
             $id = $meta(PostTypes::SOURCE_ID);
+            $company = (int) $meta('company') ? get_post((int) $meta('company')) : null; // get_post(0) is the global post.
 
-            return [
-                'id' => $id ?: null,
-                'postId' => $post->ID,
-                'name' => $post->post_title,
-                'phone' => $meta('phone'),
-                'addressLine1' => $meta('address_line1'),
-                'addressLine2' => $meta('address_line2'),
-                'postcode' => $meta('postcode'),
-                'postalAddress' => $meta('postal_address'),
-                'company' => self::company((int) $meta('company')),
-                'staff' => $id === '' ? [] : ($staff[$id] ?? []), // No id, no staff: '' would be everyone without a division.
-            ];
+            return new Division(
+                id: $id ?: null,
+                postId: $post->ID,
+                name: $post->post_title,
+                phone: $meta('phone'),
+                addressLine1: $meta('address_line1'),
+                addressLine2: $meta('address_line2'),
+                postcode: $meta('postcode'),
+                postalAddress: $meta('postal_address'),
+                company: $company ? self::toCompany($company) : null,
+                staff: $id === '' ? [] : ($staff[$id] ?? []), // No id, no staff: '' would be everyone without a division.
+            );
         }, get_posts(['post_type' => PostTypes::DIVISION, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
     }
 
     /**
-     * Every company, sorted by name: ['id' (Data Hub id, or null), 'postId', 'name', 'photoId', 'photoUrl' (the
-     * featured image, set in the editor; null without one), 'divisions' => (as divisions()), 'staff' => Staff[] across them, by name].
+     * Every company with its divisions and everyone across them, sorted by name.
+     *
+     * @return Company[]
      */
     public static function companies(): array
     {
         $divisions = self::divisions();
 
-        return array_map(function (WP_Post $post) use ($divisions): array {
-            $theirs = array_values(array_filter($divisions, fn (array $division): bool => ($division['company']['postId'] ?? 0) === $post->ID));
+        return array_map(function (WP_Post $post) use ($divisions): Company {
+            $theirs = array_values(array_filter($divisions, fn (Division $division): bool => $division->company?->postId === $post->ID));
             $staff = array_merge(...array_column($theirs, 'staff'));
             usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
 
-            return self::company($post->ID) + ['divisions' => $theirs, 'staff' => $staff];
+            return self::toCompany($post, $theirs, $staff);
         }, get_posts(['post_type' => PostTypes::COMPANY, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC']));
     }
 
@@ -291,28 +293,24 @@ final class Phonelist
     }
 
     /**
-     * A company as ['id' (Data Hub id, or null), 'postId', 'name', 'photoId', 'photoUrl'], or null for no company.
+     * @param Division[]|null $divisions
+     * @param Staff[]|null $staff
      */
-    private static function company(int $postId): ?array
+    private static function toCompany(WP_Post $post, ?array $divisions = null, ?array $staff = null): Company
     {
-        $post = $postId ? get_post($postId) : null;
-        if (!$post) {
-            return null;
-        }
         $photoId = (int) get_post_thumbnail_id($post);
 
-        return [
-            'id' => (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true) ?: null,
-            'postId' => $post->ID,
-            'name' => $post->post_title,
-            'photoId' => $photoId ?: null,
-            'photoUrl' => self::imageUrl($photoId),
-        ];
+        return new Company(
+            id: (string) get_post_meta($post->ID, PostTypes::SOURCE_ID, true) ?: null,
+            postId: $post->ID,
+            name: $post->post_title,
+            photoId: $photoId ?: null,
+            photoUrl: self::imageUrl($photoId),
+            divisions: $divisions,
+            staff: $staff,
+        );
     }
 
-    /**
-     * Full-size URL of a Media Library image, or null.
-     */
     /**
      * A phone number for showing: '+61437793226' → '0437 793 226', '+61894647800' → '(08) 9464 7800'.
      * Numbers are stored as E.164, which is what a tel: link wants.
@@ -333,6 +331,9 @@ final class Phonelist
         return preg_replace('/^[A-Z]{3}\s+/', '', $position);
     }
 
+    /**
+     * Full-size URL of a Media Library image, or null.
+     */
     private static function imageUrl(int $attachmentId): ?string
     {
         return $attachmentId ? (wp_get_attachment_image_url($attachmentId, 'full') ?: null) : null;

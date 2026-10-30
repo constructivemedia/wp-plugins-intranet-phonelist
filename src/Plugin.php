@@ -53,7 +53,7 @@ final class Plugin
 
         $log = new Log($wpdb);
         $log->register();
-        Upgrade::maybeRun($log);
+        add_action('init', fn () => Upgrade::maybeRun($log), 11); // After the post types; it may add and delete companies.
         self::$relations = new Relations($wpdb);
         self::$relations->register();
         $photos = Photos::fromConstants();
@@ -83,9 +83,6 @@ final class Plugin
             wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', self::DAILY_HOOK);
         }
 
-        if (Adapter::configured()) {
-            add_filter('intranet_phonelist_new_division_company', [Adapter::class, 'mapCompanies'], 10, 2);
-        }
         add_action(self::ORACLE_HOOK, function (int $userId = 0) use ($oracle, $log): void {
             wp_set_current_user($userId); // Logged as the user who clicked Import.
             try {

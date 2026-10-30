@@ -16,20 +16,6 @@ use RuntimeException;
  */
 final class Adapter
 {
-    /** Division → company, applied when a division is first created by the import. */
-    public const COMPANIES = [
-        'JWH Group' => ['JWH', 'JIT'],
-        'WA Country Builders' => ['GTN', 'BSN', 'BNB', 'ALB', 'CDR'],
-        'Active Plumbing' => ['ACT', 'ABN', 'AGH'],
-        'Residential Attitudes' => ['RES', 'RAT'],
-        'Plunkett Homes' => ['PHM'],
-        'Rural Building Company' => ['RBC'],
-        'Oswald Homes' => ['OSW'],
-        'Constructive Media' => ['CME'],
-        'Ceiling Force' => ['CEF'],
-        'Roofstyle' => ['ROO'],
-    ];
-
     private const STAFF_TABLE = 'PHONE_LIST_INTRANET';
     private const STAFF_COLUMNS = ['ID', 'NAME_FIRST', 'NAME_LAST_CO', 'PREF_NAME', 'EMAIL', 'MOBILE_NO', 'PH_EXT', 'VOIP', 'HOME_PHONE',
         'POSITION', 'POSITION_NO', 'POSITION_ABBR', 'JOB', 'JOB_TYPE', 'AWARD_CODE', 'TAG', 'TAG_DESCRIPTION', 'DIV_CODE', 'COMPANY_ID', 'REPORTS_TO_ID',
@@ -105,15 +91,6 @@ final class Adapter
         }
 
         return $results;
-    }
-
-    /**
-     * New divisions get their company from COMPANIES instead of one named after them. Hooked whenever Oracle is
-     * configured, so a snapshot that ends up running later from the queue still gets it.
-     */
-    public static function mapCompanies(string $name, string $divisionId): string
-    {
-        return self::companyFor($divisionId) ?? $name;
     }
 
     /**
@@ -203,20 +180,6 @@ final class Adapter
             'postcode' => $text('DIV_PCODE'),
             'postal_address' => $text('POSTAL_ADDRESS'),
         ];
-    }
-
-    /**
-     * The company COMPANIES puts a division in, or null.
-     */
-    public static function companyFor(string $divisionId): ?string
-    {
-        foreach (self::COMPANIES as $company => $divisions) {
-            if (in_array($divisionId, $divisions, true)) {
-                return $company;
-            }
-        }
-
-        return null;
     }
 
     /**

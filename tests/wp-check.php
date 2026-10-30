@@ -3,6 +3,8 @@
 // Checks inside WordPress. Everything it creates uses ids starting 'test-' (or titles starting 'Test ') and is deleted
 // at the end, even on failure.
 
+use ConstructiveMedia\IntranetPhonelist\Company;
+use ConstructiveMedia\IntranetPhonelist\Division;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Photos;
@@ -213,6 +215,22 @@ try {
     assert($ann->years === 5 && $ann->anniversary?->format('Y-m-d') === $day('+1 day') && $ann->startDate?->format('Y-m-d') === $day('+1 day -5 years'));
     assert(Phonelist::staff(name: 'new testerson')[0]->anniversary === null && Phonelist::staff(name: 'new testerson')[0]->startDate !== null); // not before a year
 
+    // Default companies (Relations::COMPANIES, here via the filter): a division leaves the company made for it, which
+    // goes; one set by hand stays put; a new division goes straight in.
+    $in->put('divisions', 'test-MD', ['name' => 'Test Mapped Division', 'updated_at' => $t1], 'test-run', 'api');
+    $in->put('divisions', 'test-HD', ['name' => 'Test Hand Division', 'updated_at' => $t1], 'test-run', 'api');
+    [$md, $hd] = [$in->postId('divisions', 'test-MD'), $in->postId('divisions', 'test-HD')];
+    $madeFor = $link($md, 'company');
+    update_field('field_iphl_division_company', $other, $hd);
+    $map = fn (string $name, string $id): string => in_array($id, ['test-MD', 'test-HD', 'test-ND'], true) ? 'Test Group' : $name;
+    add_filter('intranet_phonelist_new_division_company', $map, 10, 2);
+    Plugin::relations()->applyDefaultCompanies();
+    $in->put('divisions', 'test-ND', ['name' => 'Test New Division', 'updated_at' => $t1], 'test-run', 'api');
+    remove_filter('intranet_phonelist_new_division_company', $map);
+    assert(get_post_field('post_title', $link($md, 'company'), 'raw') === 'Test Group' && get_post($madeFor) === null);
+    assert($link($hd, 'company') === $other && get_post($other) !== null);
+    assert($link($in->postId('divisions', 'test-ND'), 'company') === $link($md, 'company'));
+
     // Org chart: a manager's team and a person's manager, from reports_to.
     $in->put('staff', 'test-o1', ['first_name' => 'Boss', 'last_name' => 'Testerson'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     $in->put('staff', 'test-o2', ['first_name' => 'Ava', 'last_name' => 'Testerson', 'reports_to' => 'test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
@@ -228,20 +246,22 @@ try {
     $in->put('staff', 'test-l1', ['first_name' => 'Lia', 'last_name' => 'Testerson', 'division_id' => 'test-LD'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     $logo = fn (int $postId): int => set_post_thumbnail($postId, wp_insert_attachment(['post_mime_type' => 'image/jpeg', 'post_title' => 'Test logo'], 'test-logo.jpg')) ? get_post_thumbnail_id($postId) : 0;
     $listingCompany = $logo($link($in->postId('divisions', 'test-LD'), 'company'));
-    $division = current(array_filter(Phonelist::divisions(), fn (array $division): bool => $division['id'] === 'test-LD'));
-    assert($division['name'] === 'Test Listing Division' && $division['phone'] === '+61894647800' && array_map(fn ($person) => $person->id, $division['staff']) === ['test-l1']);
-    assert($division['company']['name'] === 'Test Listing Division' && $division['company']['photoId'] === $listingCompany && str_ends_with((string) $division['company']['photoUrl'], 'test-logo.jpg'));
-    $company = current(array_filter(Phonelist::companies(), fn (array $company): bool => $company['name'] === 'Test Listing Division'));
-    assert(array_column($company['divisions'], 'id') === ['test-LD'] && $company['staff'][0]->id === 'test-l1' && $company['photoId'] === $listingCompany);
+    $division = current(array_filter(Phonelist::divisions(), fn (Division $division): bool => $division->id === 'test-LD'));
+    assert($division->name === 'Test Listing Division' && $division->phone === '+61894647800' && array_map(fn ($person) => $person->id, $division->staff) === ['test-l1']);
+    assert($division->company->name === 'Test Listing Division' && $division->company->photoId === $listingCompany && str_ends_with((string) $division->company->photoUrl, 'test-logo.jpg'));
+    assert($division->company->divisions === null && $division->company->staff === null);                // no loop back to the division
+    $company = current(array_filter(Phonelist::companies(), fn (Company $company): bool => $company->name === 'Test Listing Division'));
+    assert(array_column($company->divisions, 'id') === ['test-LD'] && $company->staff[0]->id === 'test-l1' && $company->photoId === $listingCompany);
+    assert(str_contains(wp_json_encode($company), '"divisions":[{"id":"test-LD"'));                      // encodes, nested objects and all
     $in->put('companies', 'test-LC', ['name' => 'Test Listing Division', 'updated_at' => $t1], 'test-run', 'api'); // a second company with the same name
-    $withDivision = array_filter(Phonelist::companies(), fn (array $company): bool => in_array('test-LD', array_column($company['divisions'], 'id'), true));
+    $withDivision = array_filter(Phonelist::companies(), fn (Company $company): bool => in_array('test-LD', array_column($company->divisions, 'id'), true));
     assert(count($withDivision) === 1);                                                                    // the division belongs to one of them only
     $deletedLogo = $logo($in->postId('companies', 'test-LC'));
     $in->delete('companies', 'test-LC', $t2, 'test-run', 'api');
     assert(get_post($deletedLogo) !== null);                                                              // a company's photo outlives it (set by hand)
     wp_delete_attachment($deletedLogo, true);
     $noId = wp_insert_post(['post_type' => PostTypes::DIVISION, 'post_status' => 'publish', 'post_title' => 'Test No Id Division']);
-    assert(current(array_filter(Phonelist::divisions(), fn (array $division): bool => $division['postId'] === $noId))['staff'] === []); // not everyone without a division
+    assert(current(array_filter(Phonelist::divisions(), fn (Division $division): bool => $division->postId === $noId))->staff === []); // not everyone without a division
 
     // Upgrade from v1: meta renamed in place (with ACF references), the position-based manager link becomes reports_to, idempotent.
     $v1 = fn (string $title, array $meta): int => wp_insert_post(['post_type' => PostTypes::STAFF, 'post_status' => 'publish', 'post_title' => $title, 'meta_input' => $meta]);

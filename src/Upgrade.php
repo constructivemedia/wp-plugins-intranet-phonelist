@@ -7,11 +7,12 @@ use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 /**
  * v1 → v2, in place: posts are kept (photos, JWH Club levels, hand-set division companies survive), their v1
  * field names become the v2 ones, v1-only fields and options go, and every record is marked as never updated
- * so Data Hub's first push always applies. Safe to run more than once.
+ * so Data Hub's first push always applies. 2.2: divisions move into their companies from Relations::COMPANIES.
+ * Safe to run more than once.
  */
 final class Upgrade
 {
-    public const VERSION = '2.0.0';
+    public const VERSION = '2.2.0';
     public const EPOCH = '1970-01-01T00:00:00+00:00';
     private const VERSION_OPTION = 'intranet_phonelist_version';
     private const UPGRADING = 'intranet_phonelist_upgrading';
@@ -122,6 +123,9 @@ final class Upgrade
             WHERE s.meta_key = %s AND NOT EXISTS (SELECT 1 FROM $wpdb->postmeta u WHERE u.post_id = s.post_id AND u.meta_key = %s)",
             PostTypes::UPDATED_AT, self::EPOCH, PostTypes::SOURCE_ID, PostTypes::UPDATED_AT
         ));
+
+        // Divisions used to get a company named after them unless Oracle was configured.
+        $counts['moved'] = (new Relations($wpdb))->applyDefaultCompanies();
 
         foreach (self::OPTIONS as $option) {
             delete_option($option);
