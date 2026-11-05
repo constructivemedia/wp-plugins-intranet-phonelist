@@ -13,7 +13,7 @@ use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * Data Hub's way in (all signed, see Signature):
+ * Data Hub's way in (bearer token, see Token):
  *
  *     PUT    /phonelist/v2/{type}/{id}   create or replace one record
  *     PATCH  /phonelist/v2/{type}/{id}   change the fields sent
@@ -45,18 +45,18 @@ final class IngressController
     public function register(): void
     {
         add_action('rest_api_init', function (): void {
-            $signed = [Signature::class, 'check'];
+            $token = [Token::class, 'check'];
             register_rest_route(self::NAMESPACE, '/' . self::TYPE_PATTERN . '/' . self::ID_PATTERN, [
-                ['methods' => 'PUT, PATCH, DELETE', 'callback' => [$this, 'write'], 'permission_callback' => $signed],
+                ['methods' => 'PUT, PATCH, DELETE', 'callback' => [$this, 'write'], 'permission_callback' => $token],
             ]);
             register_rest_route(self::NAMESPACE, '/' . self::TYPE_PATTERN, [
-                ['methods' => 'PUT', 'callback' => [$this, 'snapshot'], 'permission_callback' => $signed],
+                ['methods' => 'PUT', 'callback' => [$this, 'snapshot'], 'permission_callback' => $token],
             ]);
             register_rest_route(self::NAMESPACE, '/batch', [
-                ['methods' => WP_REST_Server::CREATABLE, 'callback' => [$this, 'batch'], 'permission_callback' => $signed],
+                ['methods' => WP_REST_Server::CREATABLE, 'callback' => [$this, 'batch'], 'permission_callback' => $token],
             ]);
             register_rest_route(self::NAMESPACE, '/jobs/(?P<id>[0-9a-f-]{36})', [
-                ['methods' => WP_REST_Server::READABLE, 'callback' => [$this, 'job'], 'permission_callback' => $signed],
+                ['methods' => WP_REST_Server::READABLE, 'callback' => [$this, 'job'], 'permission_callback' => $token],
             ]);
         });
 
@@ -80,7 +80,7 @@ final class IngressController
         }
         ['type' => $type, 'id' => $id] = $request->get_url_params();
 
-        return $this->respond($this->ingestor->apply(['op' => strtolower($request->get_method()), 'type' => $type, 'id' => $id, 'data' => $body], $this->runId(), $this->trigger($request)));
+        return $this->respond($this->ingestor->apply(['op' => strtolower($request->get_method()), 'type' => $type, 'id' => $id, 'data' => $body], $this->runId(), 'api'));
     }
 
     public function snapshot(WP_REST_Request $request): WP_REST_Response
@@ -127,8 +127,8 @@ final class IngressController
         }
 
         $data = $response->get_data();
-        if ($response->get_status() >= 400 && is_array($data) && isset($data['code'], $data['message']) && !isset($data['type'])) {
-            $status = $response->get_status() === 403 && !is_user_logged_in() ? 401 : $response->get_status();
+        $status = $response->get_status();
+        if ($status >= 400 && is_array($data) && isset($data['code'], $data['message']) && !isset($data['type'])) {
             $response = Problem::response($status, match ($status) {
                 401 => 'Unauthorized',
                 403 => 'Forbidden',
@@ -137,12 +137,11 @@ final class IngressController
             }, (string) $data['message']);
         }
 
-        $status = $response->get_status();
-        $this->log->write($this->runId(), $this->trigger($request), $status >= 500 ? 'error' : ($status >= 400 ? 'warning' : 'info'), 'request', null, null, $request->get_method() . ' ' . $request->get_route(), null, array_filter([
+        $this->log->write($this->runId(), 'api', $status >= 500 ? 'error' : ($status >= 400 ? 'warning' : 'info'), 'request', null, null, $request->get_method() . ' ' . $request->get_route(), null, array_filter([
             'status' => $status,
             'duration_ms' => (int) round((microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true))) * 1000),
             'idempotency_key' => $request->get_header('Idempotency-Key'),
-            'signature' => $request->get_header(Signature::HEADER) !== null || !is_user_logged_in() ? Signature::result($request) : null,
+            'auth' => Token::result($request),
             'query' => $request->get_query_params() ?: null,
         ], fn ($value): bool => $value !== null));
 
@@ -194,17 +193,17 @@ final class IngressController
     {
         $key = $request->get_header('Idempotency-Key');
         try {
-            $job = $this->jobs->create($kind, $type, $items, $key === null || $key === '' ? null : substr($key, 0, 100), $this->trigger($request));
+            $job = $this->jobs->create($kind, $type, $items, $key === null || $key === '' ? null : substr($key, 0, 100), 'api');
         } catch (RuntimeException $e) {
             return Problem::response(503, 'Could not be queued', $e->getMessage() . ' Try again.');
         }
         $this->runId = $job['id'];
         $url = rest_url(self::NAMESPACE . '/jobs/' . $job['id']);
+        $status = $job['existing'] ? $job['status'] : $this->jobs->dispatch($job['id']);
 
-        $response = new WP_REST_Response(['job' => $job['id'], 'status' => $job['status'], 'links' => ['self' => $url]], $job['existing'] ? 200 : 202);
+        $response = new WP_REST_Response(['job' => $job['id'], 'status' => $status, 'links' => ['self' => $url]], $job['existing'] ? 200 : 202);
         if (!$job['existing']) {
             $response->header('Location', $url); // Not on a 200: PHP turns a 200 with a Location header into a 302.
-            $this->jobs->runAfterResponse();
         }
 
         return $response;
@@ -227,13 +226,5 @@ final class IngressController
     private function runId(): string
     {
         return $this->runId ??= wp_generate_uuid4();
-    }
-
-    /**
-     * 'api' for Data Hub (signed, or unsigned on a local site), 'manual' for a logged-in user.
-     */
-    private function trigger(WP_REST_Request $request): string
-    {
-        return $request->get_header(Signature::HEADER) === null && is_user_logged_in() ? 'manual' : 'api';
     }
 }

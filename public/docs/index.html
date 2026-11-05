@@ -17,9 +17,14 @@
   <script>
     Scalar.createApiReference('#app', {
       url: 'openapi.yaml',
-      proxyUrl: '', // Try-it requests go straight from the browser, never through Scalar's proxy (they carry signatures).
       telemetry: false,
       withDefaultFonts: false,
+      hideTestRequestButton: true,
+      hideClientButton: true,
+      showDeveloperTools: 'never',
+      agent: { disabled: true },
+      mcp: { disabled: true },
+      customCss: 'a[href*="scalar.com"] { display: none; }',
       documentDownloadType: 'yaml',
       orderSchemaPropertiesBy: 'preserve',
       orderRequiredPropertiesFirst: false,

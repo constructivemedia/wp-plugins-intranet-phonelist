@@ -6,7 +6,7 @@ PHP_SAPI === 'cli' || exit;
 require __DIR__ . '/../vendor/autoload.php';
 
 use ConstructiveMedia\IntranetPhonelist\Api\Problem;
-use ConstructiveMedia\IntranetPhonelist\Api\Signature;
+use ConstructiveMedia\IntranetPhonelist\Api\Token;
 use ConstructiveMedia\IntranetPhonelist\Cli\ClubCommand;
 use ConstructiveMedia\IntranetPhonelist\Phonelist;
 use ConstructiveMedia\IntranetPhonelist\PostTypes;
@@ -126,21 +126,15 @@ foreach (array_keys(Schema::TYPES) as $type) {
     assert(array_filter($rows) === [], "$type has an unfinished row");
 }
 
-// Request signatures: HMAC-SHA256 over "<t>.<METHOD>.<path>.<raw body>", 5-minute window.
-$secret = 'test-secret'; $body = '{"id":"S1","name":"A"}'; $now = 1_760_000_000;
-$path = '/wp-json/phonelist/v2/staff/S1';
-$header = Signature::sign('PUT', $path, $body, $secret, $now);
-assert(preg_match('/^t=1760000000,v1=[0-9a-f]{64}$/', $header) === 1);
-assert($header === 't=1760000000,v1=' . hash_hmac('sha256', "1760000000.PUT.$path.$body", $secret));
-assert(Signature::verify($header, 'PUT', $path, $body, $secret, $now + 299) === null);
-assert(Signature::verify($header, 'PUT', $path, $body, $secret, $now - 299) === null);
-assert(Signature::verify($header, 'PUT', $path, $body, $secret, $now + 301) === 'expired');
-assert(Signature::verify($header, 'PUT', $path, '{"id": "S1", "name": "A"}', $secret, $now) === 'mismatch'); // re-encoded body fails
-assert(Signature::verify($header, 'PUT', $path, $body, 'other', $now) === 'mismatch');
-assert(Signature::verify($header, 'DELETE', $path, $body, $secret, $now) === 'mismatch');                   // another method
-assert(Signature::verify($header, 'PUT', '/wp-json/phonelist/v2/staff/S2', $body, $secret, $now) === 'mismatch'); // another record
-assert(Signature::verify(null, 'PUT', $path, $body, $secret, $now) === 'missing' && Signature::verify('', 'PUT', $path, $body, $secret, $now) === 'missing');
-assert(Signature::verify('v1=abc', 'PUT', $path, $body, $secret, $now) === 'malformed');
+// Bearer token: Authorization: Bearer <secret>.
+assert(Token::verify('Bearer test-secret', 'test-secret') === null);
+assert(Token::verify('bearer   test-secret ', 'test-secret') === null);
+assert(Token::verify('Bearer other', 'test-secret') === 'invalid');
+assert(Token::verify('Bearer test-secre', 'test-secret') === 'invalid');
+assert(Token::verify(null, 'test-secret') === 'missing' && Token::verify('', 'test-secret') === 'missing');
+assert(Token::verify('test-secret', 'test-secret') === 'malformed');
+assert(Token::verify('Basic YWRtaW46eA==', 'test-secret') === 'malformed'); // an Application Password
+assert(Token::verify('Bearer a b', 'test-secret') === 'malformed');
 
 // Problem details (RFC 9457).
 assert(Problem::body(422, 'Invalid record', 'staff S1', [['field' => 'email', 'message' => 'Not a valid email address.']])

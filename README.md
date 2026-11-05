@@ -1,6 +1,6 @@
 # Intranet Phonelist
 
-A WordPress plugin holding JWH's companies, divisions and staff for the intranet phone list. JWH's Data Hub pushes them in through a signed REST API, and theme developers read them in PHP or over REST.
+A WordPress plugin holding JWH's companies, divisions and staff for the intranet phone list. JWH's Data Hub pushes them in through a REST API (bearer token, admin only), and theme developers read them in PHP.
 
 - **Structure:** **Company** → **Division** → **Staff**. Data Hub owns the records. Which company a division belongs to is set in WordPress.
 - **Requirements:** PHP 8.4+, Advanced Custom Fields, and `giggsey/libphonenumber-for-php-lite` (installed with the plugin by Composer). Admin Columns is optional.
@@ -20,6 +20,7 @@ Create `.env` in the project root. It's gitignored, so never commit it. [wp-conf
 
 ```
 INTRANET_PHONELIST_API_SECRET=        # optional locally: defaults to local-dev-secret
+INTRANET_PHONELIST_QUEUE=             # optional: async (default) or sync
 INTRANET_PHONELIST_ORACLE_DSN=<host>:1521/<service_name>
 INTRANET_PHONELIST_ORACLE_USER=
 INTRANET_PHONELIST_ORACLE_PASSWORD=
@@ -41,6 +42,7 @@ Everything goes through one place, `Ingest\Ingestor`, whether it comes from a si
   - The request gets `202` straight away, and the job is processed after the response is sent.
   - A cron task every minute picks up anything left behind.
   - Jobs run one at a time. An interrupted one is simply run again: every item is safe to repeat.
+  - **Sync mode:** set `INTRANET_PHONELIST_QUEUE` to `sync` (like Laravel's sync driver) and the job runs inside the request instead, so the reply's `status` is already `done` or `failed` and errors show up in that request. Good for staging and debugging. A large snapshot then holds the request open, so leave production on `async`.
   - On the server, run WP-Cron from the system cron so the sweep doesn't depend on site visits: `* * * * * wp cron event run --due-now --path=/path/to/wordpress`, as the web server's user.
 
 ### Stored values
@@ -206,11 +208,9 @@ Everything is under `/wp-json/phonelist/v2/`:
 | `GET /{companies\|divisions\|staff}` | Every record WordPress holds, in Data Hub's shape, sorted by name (`id` is null for records WordPress made, such as a company created for a new division). Staff can be filtered: `?name=&division_id=&department_code=` |
 | `GET /{companies\|divisions\|staff}/{id}` | One record, by Data Hub ID |
 | `GET /staff/{id}/team` | The people who report to that staff member, as records sorted by name |
-| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress (signed), see `public/docs/` |
+| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress, see `public/docs/` |
 
-**Who can read:**
-- **Logged-in users:** on intranet pages, use the login cookie plus an `X-WP-Nonce` header (`wp_create_nonce('wp_rest')`). Scripts can use an Application Password instead.
-- **Signed requests:** these are the only ones that see `date_of_birth` and `home_phone`.
+**Access:** every route, reads included, needs `Authorization: Bearer <INTRANET_PHONELIST_API_SECRET>` (`Api\Token`). It's for Data Hub and us, not intranet users: WordPress logins and Application Passwords are refused, and records include `date_of_birth` and `home_phone`. Theme code reads through `Phonelist` in PHP instead. Local and development sites also accept requests with no `Authorization` header; staging and production always need the token.
 
 The v1 `phonelist/v1` routes are gone.
 
@@ -226,7 +226,7 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 | `src/PostTypes.php` | Post types, the JWH Club taxonomy, ACF fields (from `Schema`) |
 | `src/Relations.php` | Division, company and manager links |
 | `src/Ingest/` | `Ingestor` (the only writer of records), `Outcome` (one record's result), `Jobs` (queue), `Photos`, `PhoneNumbers`, `Log` (audit table) |
-| `src/Api/` | `IngressController`, `ReadController`, `Signature`, `Problem` |
+| `src/Api/` | `IngressController`, `ReadController`, `Token`, `Problem` |
 | `src/Oracle/` | `Adapter`: the development import |
 | `src/Admin/` | `SettingsPage` (Jobs, Logs, Photos), `Relationships` (boxes on the edit screens) |
 | `src/Cli/` | `club-import`, `job`, `oracle-import` |
@@ -239,6 +239,7 @@ Tests:
 ddev exec php -d zend.assertions=1 tests/plan-check.php                                            # pure PHP
 ddev exec php -d zend.assertions=1 /usr/local/bin/wp-cli --path=wp eval-file tests/wp-check.php    # inside WordPress
 bash tests/api-check.sh                                                                             # the REST API, end to end
+bash tests/staging-check.sh                                                                         # the API as staging and production see it
 ```
 
 ## Installing with Composer
@@ -269,7 +270,7 @@ Tables and data upgrade themselves on load. Release archives leave out `.ddev/`,
 
 ## Deploying
 
-1. **Constants:** set `INTRANET_PHONELIST_API_SECRET` in the production `wp-config.php`, shared with JWH IT and never stored in the database. Set `INTRANET_PHONELIST_PHOTOS_DIR` if you use a photo folder. Leave the Oracle constants out.
+1. **Constants:** set `INTRANET_PHONELIST_API_SECRET` in the production `wp-config.php` (`openssl rand -hex 32`, a different one per site), shared with JWH IT and never stored in the database. Serve the API over HTTPS only. If requests with the token still get `401 Bearer token missing`, the web server is dropping the `Authorization` header: on Apache, keep WordPress's `RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]` line in `.htaccess`. Set `INTRANET_PHONELIST_PHOTOS_DIR` if you use a photo folder. Leave the Oracle constants out.
 2. **Install:** run `composer update`, then activate the plugin. Coming from v1, the first load upgrades the existing records in place, keeping their photos, club levels and division companies.
 3. **Cron:** add the system cron line for WP-Cron (see **How data gets in**).
 4. **Data:** ask Data Hub for a full snapshot of each type (divisions, then staff), and check the Jobs tab.

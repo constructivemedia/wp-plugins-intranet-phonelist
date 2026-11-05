@@ -16,7 +16,7 @@ final class Schema
     /** API type => post type. */
     public const TYPES = ['companies' => PostTypes::COMPANY, 'divisions' => PostTypes::DIVISION, 'staff' => PostTypes::STAFF];
 
-    /** Never exposed to unsigned reads or written to the log. */
+    /** Never written to the log. */
     public const PRIVATE = ['date_of_birth', 'home_phone'];
 
     /**

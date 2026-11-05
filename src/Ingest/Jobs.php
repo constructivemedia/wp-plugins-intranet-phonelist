@@ -198,10 +198,18 @@ final class Jobs
     }
 
     /**
-     * After the current response has been sent, work through the queue (the new job included, in order).
+     * Start a new job and return its status. By default it runs after the current response has been sent, working
+     * through the queue in order. With INTRANET_PHONELIST_QUEUE set to 'sync' (like Laravel's sync driver) it runs
+     * now, inside the request, so the reply already has the result; if another job is running it stays queued.
      */
-    public function runAfterResponse(): void
+    public function dispatch(string $id): string
     {
+        if (defined('INTRANET_PHONELIST_QUEUE') && INTRANET_PHONELIST_QUEUE === 'sync') {
+            $this->process($id);
+
+            return $this->get($id)['status'] ?? 'queued';
+        }
+
         add_action('shutdown', function (): void {
             if (function_exists('fastcgi_finish_request')) {
                 fastcgi_finish_request();
@@ -210,6 +218,8 @@ final class Jobs
             @set_time_limit(0);
             $this->sweep();
         }, 100);
+
+        return 'queued';
     }
 
     /**
