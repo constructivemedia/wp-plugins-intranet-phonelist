@@ -2,7 +2,7 @@
 
 namespace ConstructiveMedia\IntranetPhonelist\Cli;
 
-use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
+use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
 use ConstructiveMedia\IntranetPhonelist\Oracle\Adapter;
 use Throwable;
 use WP_CLI;
@@ -37,8 +37,9 @@ final class OracleImportCommand
         }
 
         foreach ($results as $type => $typeResults) {
-            WP_CLI::log(ucfirst($type) . ': ' . Jobs::summary($typeResults));
+            $counts = array_diff_key(Ingestor::report($typeResults), ['problems' => 0]);
+            WP_CLI::log(ucfirst($type) . ': ' . implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts)));
         }
-        WP_CLI::success('Imported (see the Jobs and Logs tabs).');
+        WP_CLI::success('Imported (see the Logs tab).');
     }
 }

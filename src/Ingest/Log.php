@@ -123,13 +123,12 @@ final class Log
     }
 
     /**
-     * @return array<string, object{started: string, triggered_by: string, user_id: int, status: ?string}> The 50 most recent runs, newest first, keyed by run ID.
+     * @return array<string, object{started: string, triggered_by: string, user_id: int}> The 50 most recent runs, newest first, keyed by run ID.
      */
     public function runs(): array
     {
         $rows = $this->db->get_results(
-            "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by, MAX(user_id) AS user_id,
-                MAX(CASE WHEN action = 'job_end' THEN JSON_UNQUOTE(JSON_EXTRACT(context, '$.status')) END) AS status
+            "SELECT run_id, MIN(created_at) AS started, MAX(triggered_by) AS triggered_by, MAX(user_id) AS user_id
             FROM {$this->table} GROUP BY run_id ORDER BY started DESC LIMIT 50"
         );
 

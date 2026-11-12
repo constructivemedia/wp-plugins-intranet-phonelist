@@ -15,7 +15,6 @@ remove_records() {
     [ -n "$ids" ] && ddev wp post delete $ids --force >/dev/null 2>&1
     ids=$(ddev wp post list --post_type=iphl_company --title='Test Api Division' --format=ids 2>/dev/null)
     [ -n "$ids" ] && ddev wp post delete $ids --force >/dev/null 2>&1
-    ddev wp db query "DELETE FROM wp_iphl_jobs WHERE idempotency_key LIKE 'test-api-%' OR payload LIKE '%test-api-%'" >/dev/null 2>&1
     # Forget the test records' deletions, so the next run can create them again.
     ddev wp eval 'update_option("intranet_phonelist_deleted", array_filter(get_option("intranet_phonelist_deleted", []), fn ($key) => !str_contains($key, ":test-api-"), ARRAY_FILTER_USE_KEY), false);' >/dev/null 2>&1
 }
@@ -25,7 +24,6 @@ cleanup() {
 }
 trap cleanup EXIT
 remove_records
-KEY="test-api-key-$(date +%s)"
 
 # request METHOD PATH BODY MODE(token|none|wrong|app) [extra curl args...] → prints status
 request() {
@@ -81,18 +79,20 @@ expect "a manager's team" 200 "$(request GET /staff/test-api-1/team '' token)"
 has "team lists the report" '"id":"test-api-2"'
 expect "team of an unknown person" 404 "$(request GET /staff/test-api-nope/team '' token)"
 expect "empty snapshot is refused" 422 "$(request PUT /staff '{"records":[]}' token)"
-expect "batch is accepted" 202 "$(request POST /batch "{\"operations\":[{\"op\":\"put\",\"type\":\"divisions\",\"id\":\"test-api-D\",\"data\":{\"name\":\"Test Api Division\",\"updated_at\":\"$T1\"}},{\"op\":\"patch\",\"type\":\"staff\",\"id\":\"test-api-1\",\"data\":{\"division_id\":\"test-api-D\",\"updated_at\":\"$T2\"}}]}" token -H "Idempotency-Key: $KEY")"
-JOB=$(grep -o '"job":"[^"]*"' <<<"$LAST_BODY" | cut -d'"' -f4)
-expect "same idempotency key returns the same job" 200 "$(request POST /batch '{"operations":[{"op":"delete","type":"staff","id":"test-api-1","data":{}}]}' token -H "Idempotency-Key: $KEY")"
-has "same job id" "\"job\":\"$JOB\""
-sleep 3
-expect "job status" 200 "$(request GET "/jobs/$JOB" '' token)"
-has "job is done" '"status":"done"'
-has "the division was created" '"type":"divisions","op":"put","result":"created"'
-has "the staff member was updated" '"type":"staff","op":"patch","result":"updated"'
+expect "a batch is processed" 200 "$(request POST /batch "{\"operations\":[{\"op\":\"put\",\"type\":\"divisions\",\"id\":\"test-api-D\",\"data\":{\"name\":\"Test Api Division\",\"updated_at\":\"$T1\"}},{\"op\":\"patch\",\"type\":\"staff\",\"id\":\"test-api-1\",\"data\":{\"division_id\":\"test-api-D\",\"updated_at\":\"$T2\"}}]}" token)"
+has "...counting the division created" '"created":1'
+has "...and the staff member updated" '"updated":1'
+has "...with no problems" '"problems":\[\]'
+expect "a batch item that fails is listed" 200 "$(request POST /batch '{"operations":[{"op":"delete","type":"staff","id":"test-api-1","data":{}}]}' token)"
+has "...as a problem" '"problems":\[{"id":"test-api-1","type":"staff","op":"delete","result":"invalid"'
+expect "batch needs the token" 401 "$(request POST /batch '{"operations":[]}' wrong)"
+# A record with no id stops a snapshot deleting anything, so this can't touch real companies.
+expect "a snapshot is processed" 200 "$(request PUT /companies "{\"records\":[{\"id\":\"test-api-C\",\"name\":\"Test Api Company\",\"updated_at\":\"$T1\"},{\"name\":\"Test Api No Id\",\"updated_at\":\"$T1\"}]}" token)"
+has "...counting the company created" '"created":1'
+has "...and the invalid one" '"invalid":1'
+has "...and deleting nothing" '"deleted":0'
 expect "companies list" 200 "$(request GET /companies '' token)"
 has "lists companies WordPress created, with no Data Hub ID" '"id":null,"updated_at":null,"name":"Test Api Division"'
-expect "job status needs the token" 401 "$(request GET "/jobs/$JOB" '' wrong)"
 expect "club" 200 "$(request GET /club '' token)"
 expect "DELETE without updated_at is invalid" 422 "$(request DELETE /staff/test-api-1 '' token)"
 expect "DELETE" 204 "$(request DELETE "/staff/test-api-1?updated_at=$T2_QUERY" '' token)"

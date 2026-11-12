@@ -31,11 +31,6 @@ $cleanUp = function () use ($wpdb, $logTable): void {
     $wpdb->query("DELETE FROM $logTable WHERE run_id LIKE 'test-%' OR source_id LIKE 'test-%' OR label LIKE 'Test %'");
     $tombstones = get_option('intranet_phonelist_deleted', []);
     update_option('intranet_phonelist_deleted', array_filter($tombstones, fn (string $key): bool => !str_contains($key, ':test-'), ARRAY_FILTER_USE_KEY), false);
-    $jobsTable = $wpdb->prefix . 'iphl_jobs';
-    foreach ($wpdb->get_col("SELECT id FROM $jobsTable WHERE idempotency_key LIKE 'test-%' OR payload LIKE '%\"test-%'") as $jobId) {
-        $wpdb->query($wpdb->prepare("DELETE FROM $logTable WHERE run_id = %s", $jobId));
-        $wpdb->delete($jobsTable, ['id' => $jobId]);
-    }
     wp_cache_flush();
 };
 
@@ -82,6 +77,7 @@ try {
     assert($in->patch('staff', 'test-404', ['updated_at' => $t2], 'test-run', 'api')->status === 404);
     assert($in->put('staff', 'test-1', ['id' => 'other'] + $jane + ['updated_at' => $t2], 'test-run', 'api')->status === 422);
     assert($in->put('staff', 'test-1', ['last_name' => ''] + $jane + ['updated_at' => $t2], 'test-run', 'api')->errors[0]['field'] === 'last_name');
+    $in->put('staff', 'test-2', $jane + ['updated_at' => $t0], 'test-run', 'api');
     $terminated = $in->put('staff', 'test-2', ['status' => 'inactive'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     assert($terminated->result === 'deleted' && $terminated->status === 200 && $in->postId('staff', 'test-2') === 0);
     assert($in->put('divisions', 'test-D', ['name' => 'Test Division', 'updated_at' => $t1], 'test-run', 'api')->status === 201);
@@ -105,7 +101,7 @@ try {
     $longId = 'test-' . str_repeat('x', 70);
     $in->apply(['op' => 'put', 'type' => 'staff', 'id' => $longId, 'data' => []], 'test-run', 'api');
     assert((int) $wpdb->get_var("SELECT COUNT(*) FROM $logTable WHERE source_id LIKE 'test-xxxx%'") === 1);         // an over-long id still gets its log row
-    $in->put('staff', 'test-left', ['status' => 'inactive'] + $jane + ['updated_at' => $t2], 'test-run', 'api'); // a leaver we never held: remembered too
+    assert($in->put('staff', 'test-left', ['status' => 'inactive'] + $jane + ['updated_at' => $t2], 'test-run', 'api')->result === 'unchanged'); // a leaver we never held: nothing to delete, but remembered
     assert($in->put('staff', 'test-left', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);
     $t3 = '2026-10-15T11:00:00+08:00';
     assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t3], 'test-run', 'api')->result === 'created');  // ...but a newer one brings it back
@@ -289,52 +285,25 @@ try {
     assert($m($ud, 'address_line1') === '1 Test St' && !metadata_exists('post', $ud, 'fax') && !metadata_exists('post', $ud, 'div_code') && !metadata_exists('post', $ud, 'div_name'));
     assert($in->put('staff', 'test-us', $jane + ['updated_at' => $t0], 'test-run', 'api')->result === 'updated');   // the first push always applies
 
-    // Jobs: a batch resolves out-of-order references, repeats by idempotency key, and a crashed job is resumed.
-    $jobs = Plugin::jobs();
-    $snapshot = function (array $records) use ($jobs): array {
-        $job = $jobs->create('snapshot', 'companies', $records, null, 'api');
-        $jobs->process($job['id']);
-        return $jobs->get($job['id'])['results'];
-    };
-    $job = $jobs->create('batch', null, [
+    // A batch resolves out-of-order references, and each operation succeeds or fails on its own.
+    $results = $in->batch([
         ['op' => 'put', 'type' => 'staff', 'id' => 'test-b1', 'data' => $jane + ['division_id' => 'test-BD', 'updated_at' => $t1]],
         ['op' => 'put', 'type' => 'divisions', 'id' => 'test-BD', 'data' => ['name' => 'Test Batch Division', 'updated_at' => $t1]],
         ['op' => 'put', 'type' => 'staff', 'data' => $jane + ['updated_at' => $t1]],                                  // no id
-    ], 'test-key-1', 'api');
-    assert(!$job['existing'] && $jobs->create('batch', null, [], 'test-key-1', 'api')['id'] === $job['id']);
-    $jobs->sweep();
-    $done = $jobs->get($job['id']);
-    assert($done['status'] === 'done' && $done['total'] === 3 && $done['done'] === 3);
-    assert(array_column($done['results'], 'result') === ['created', 'created', 'invalid']);
+        'not an operation',
+    ], 'test-run', 'api');
+    assert(array_column($results, 'result') === ['created', 'created', 'invalid', 'invalid']);
     assert($link($in->postId('staff', 'test-b1'), 'division') === $in->postId('divisions', 'test-BD'));       // staff sent before their division
 
-    $job2 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b2', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
-    $wpdb->update($wpdb->prefix . 'iphl_jobs', ['status' => 'running', 'heartbeat' => gmdate('Y-m-d H:i:s', time() - 600)], ['id' => $job2['id']]);
-    $jobs->sweep();
-    assert($jobs->get($job2['id'])['status'] === 'done' && $in->postId('staff', 'test-b2') > 0);
-
-    // A specific job can be run on demand, and a failed one retried.
-    $job3 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b3', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
-    $wpdb->update($wpdb->prefix . 'iphl_jobs', ['status' => 'failed', 'attempts' => 3], ['id' => $job3['id']]);
-    assert($jobs->process($job3['id']) === true && $jobs->get($job3['id'])['status'] === 'done' && $in->postId('staff', 'test-b3') > 0);
-    assert($jobs->process($job3['id']) === false);                                                 // done jobs aren't re-run
-    $job4 = $jobs->create('batch', null, [['op' => 'put', 'type' => 'staff', 'id' => 'test-b4', 'data' => $jane + ['updated_at' => $t1]]], null, 'api');
-    $wpdb->update($wpdb->prefix . 'iphl_jobs', ['attempts' => 3], ['id' => $job4['id']]);
-    $jobs->sweep();                                                                                  // gives up: 4th attempt
-    $gaveUp = $jobs->get($job4['id']);
-    assert($gaveUp['status'] === 'failed' && $gaveUp['finished_at'] !== null && str_ends_with($gaveUp['created_at'], 'Z'));
-
-    // A job that can't be stored is an error, never a silent acknowledgement.
-    $refused = false;
-    try {
-        $jobs->create(str_repeat('x', 50), null, [['op' => 'put']], null, 'api');
-    } catch (RuntimeException) {
-        $refused = true;
-    }
-    assert($refused);
+    // The reply: every main count, the rest only when they happened, and only the rows worth a look.
+    $report = Ingestor::report([...$results, ['id' => 'test-w', 'result' => 'unchanged', 'warnings' => [['field' => 'mobile', 'message' => '…']]]]);
+    assert($report['created'] === 2 && $report['updated'] === 0 && $report['unchanged'] === 1 && $report['deleted'] === 0 && $report['invalid'] === 2);
+    assert(!isset($report['stale']) && array_column($report['problems'], 'result') === ['invalid', 'invalid', 'unchanged']);
+    assert(Ingestor::report([]) === ['created' => 0, 'updated' => 0, 'unchanged' => 0, 'deleted' => 0, 'problems' => []]);
 
     // Snapshot of one type deletes that type's records (with a Data Hub ID) missing from it. Companies here, so no real
     // records are at risk: locally only test companies have a Data Hub ID.
+    $snapshot = fn (array $records): array => $in->snapshot('companies', $records, 'test-run', 'api');
     $realWithIds = (int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts p JOIN $wpdb->postmeta m ON m.post_id = p.ID WHERE p.post_type = %s AND m.meta_key = %s AND m.meta_value NOT LIKE 'test-%%'", PostTypes::COMPANY, PostTypes::SOURCE_ID));
     if ($realWithIds === 0) {
         $in->put('companies', 'test-C1', ['name' => 'Test Company One', 'updated_at' => $t1], 'test-run', 'api');
@@ -345,17 +314,22 @@ try {
         assert($in->postId('companies', 'test-C1') > 0 && $in->postId('companies', 'test-C2') === 0);
         assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 1 === (int) $ours); // ours untouched
 
+        // A snapshot always wins: an older updated_at, or none, still applies, and a deleted record comes straight back.
+        $results = $snapshot([['id' => 'test-C1', 'name' => 'Test Company Renamed', 'updated_at' => $t0], ['id' => 'test-C2', 'name' => 'Test Company Two']]);
+        assert(array_column($results, 'result') === ['updated', 'created']);
+        assert(get_post_field('post_title', $in->postId('companies', 'test-C1'), 'raw') === 'Test Company Renamed');
+        assert(Schema::updatedAt(get_post_meta($in->postId('companies', 'test-C2'), PostTypes::UPDATED_AT, true)) !== null); // stamped with now
+
         // A snapshot with unusable ids (numbers here) deletes nothing.
         $results = $snapshot([['id' => 7, 'name' => 'Test Seven', 'updated_at' => $t2]]);
         assert($in->postId('companies', 'test-C1') > 0 && !in_array('deleted', array_column($results, 'result'), true));
         assert(end($results)['result'] === 'error');
 
-        // A snapshot that would delete more than 10 records and 10% of those held deletes nothing.
-        for ($i = 2; $i <= 13; $i++) {
-            $in->put('companies', "test-C$i", ['name' => "Test Company $i", 'updated_at' => $t1], 'test-run', 'api');
-        }
-        $results = $snapshot([['id' => 'test-C1', 'name' => 'Test Company One', 'updated_at' => $t2]]);
-        assert($in->postId('companies', 'test-C13') > 0 && end($results)['result'] === 'error');
+        // No cap: however many are missing, they all go.
+        $snapshot(array_map(fn (int $i): array => ['id' => "test-C$i", 'name' => "Test Company $i"], range(1, 13)));
+        $results = $snapshot([['id' => 'test-C1', 'name' => 'Test Company 1']]);
+        assert(Ingestor::report($results)['deleted'] === 12 && $in->postId('companies', 'test-C13') === 0);
+        assert((int) $wpdb->get_var($wpdb->prepare("SELECT COUNT(*) FROM $wpdb->posts WHERE post_type = %s", PostTypes::COMPANY)) - 1 === (int) $ours); // ours still untouched
     } else {
         echo "Skipped the snapshot deletion check: this site has companies with Data Hub IDs.\n";
     }

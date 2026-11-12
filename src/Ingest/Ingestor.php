@@ -9,8 +9,8 @@ use DateTimeImmutable;
 use Throwable;
 
 /**
- * The only code that writes companies, divisions and staff. Used by the API, by batch and snapshot jobs, and by the
- * Oracle import. Every outcome is logged, one row per record.
+ * The only code that writes companies, divisions and staff. Used by the API (single records, batches and snapshots)
+ * and by the Oracle import. Every outcome is logged, one row per record.
  *
  * Records are found by their Data Hub ID. Each write is checked against the updated_at last applied:
  * older is refused (stale), the same data is 'unchanged', anything else is written. Deletions are remembered for a
@@ -21,6 +21,8 @@ final class Ingestor
     /** Option: "type:id" => [updated_at, deleted at (unix)], for records deleted in the last TOMBSTONE_DAYS. */
     private const TOMBSTONES = 'intranet_phonelist_deleted';
     private const TOMBSTONE_DAYS = 90;
+    /** The results a report counts even when there are none. */
+    private const COUNTED = ['created', 'updated', 'unchanged', 'deleted'];
 
     public function __construct(
         private readonly Log $log,
@@ -31,10 +33,11 @@ final class Ingestor
 
     /**
      * Create or replace a record: fields not sent are cleared. $type must be one of Schema::TYPES.
+     * $force (snapshots) skips the updated_at checks: what's sent wins.
      */
-    public function put(string $type, string $id, array $input, string $runId, string $trigger): Outcome
+    public function put(string $type, string $id, array $input, string $runId, string $trigger, bool $force = false): Outcome
     {
-        return $this->logged($type, $id, $runId, $trigger, fn (): Outcome => $this->write($type, $id, $input, false));
+        return $this->logged($type, $id, $runId, $trigger, fn (): Outcome => $this->write($type, $id, $input, false, $force));
     }
 
     /**
@@ -46,11 +49,12 @@ final class Ingestor
     }
 
     /**
-     * Remove a record, unless it was updated after $updatedAt. Gone already is still 'deleted' (and remembered).
+     * Remove a record, unless it was updated after $updatedAt ($force, for snapshots: regardless). Gone already is
+     * still 'deleted' (and remembered).
      */
-    public function delete(string $type, string $id, string $updatedAt, string $runId, string $trigger): Outcome
+    public function delete(string $type, string $id, string $updatedAt, string $runId, string $trigger, bool $force = false): Outcome
     {
-        return $this->logged($type, $id, $runId, $trigger, function () use ($type, $id, $updatedAt): Outcome {
+        return $this->logged($type, $id, $runId, $trigger, function () use ($type, $id, $updatedAt, $force): Outcome {
             $time = Schema::updatedAt($updatedAt);
             if ($time === null) {
                 return new Outcome('invalid', 422, errors: [['field' => 'updated_at', 'message' => 'Must be an ISO 8601 date and time with a timezone offset.']]);
@@ -63,7 +67,7 @@ final class Ingestor
                 }
                 return new Outcome('deleted', 204, message: 'Already gone.');
             }
-            if ($stale = $this->stale($postId, $time)) {
+            if (!$force && ($stale = $this->stale($postId, $time))) {
                 return $stale;
             }
             $label = get_post_field('post_title', $postId, 'raw');
@@ -107,12 +111,93 @@ final class Ingestor
         };
     }
 
+    /**
+     * Operations ({op, type, id, data}) in order, each succeeding or failing on its own.
+     *
+     * @return array<array> A result row per operation: {id, type, op, result, errors?, warnings?, message?}.
+     */
+    public function batch(array $operations, string $runId, string $trigger): array
+    {
+        return array_map(fn (mixed $operation): array => [
+            'id' => is_array($operation) && is_string($operation['id'] ?? null) ? $operation['id'] : null,
+            'type' => is_array($operation) ? ($operation['type'] ?? null) : null,
+            'op' => is_array($operation) ? ($operation['op'] ?? null) : null,
+        ] + $this->apply(is_array($operation) ? $operation : [], $runId, $trigger)->toArray(), array_values($operations));
+    }
+
+    /**
+     * Every record of $type, as the truth: each is written whatever its updated_at (optional here; now if missing),
+     * then every other record of $type is deleted. That includes staff and divisions with no Data Hub ID; companies
+     * the intranet made itself are kept. Finally every staff link is rechecked.
+     *
+     * Nothing is deleted when any record lacks a usable id (a non-empty string): a record we couldn't match would
+     * otherwise be deleted as missing.
+     *
+     * @return array<array> As batch(): a row per record, then one per deletion (or one error row if they were refused).
+     */
+    public function snapshot(string $type, array $records, string $runId, string $trigger): array
+    {
+        @set_time_limit(0); // A large snapshot can outlast PHP's default limit.
+        ignore_user_abort(true); // Finish (and do the deletions) even if the sender stops waiting.
+        $now = (new DateTimeImmutable('now', wp_timezone()))->format(DATE_RFC3339);
+        $results = [];
+        $listed = [];
+        foreach (array_values($records) as $record) {
+            $record = is_array($record) ? $record : [];
+            $id = is_string($record['id'] ?? null) && $record['id'] !== '' ? $record['id'] : null;
+            $outcome = $id === null
+                ? $this->logged($type, '', $runId, $trigger, fn (): Outcome => new Outcome('invalid', 422, errors: [['field' => 'id', 'message' => 'Required: the Data Hub ID, as a string.']]))
+                : $this->put($type, $id, ['updated_at' => Schema::updatedAt($record['updated_at'] ?? null) ? $record['updated_at'] : $now] + $record, $runId, $trigger, true);
+            $results[] = ['id' => $id, 'type' => $type, 'op' => 'put'] + $outcome->toArray();
+            if ($id !== null) {
+                $listed[$id] = true;
+            }
+        }
+
+        if (count($listed) < count($results)) {
+            $refused = 'Some records have no usable id (a non-empty string), so nothing was deleted.';
+            $this->log->write($runId, $trigger, 'error', 'snapshot_refused', Schema::TYPES[$type], null, $type, $refused);
+            $results[] = ['id' => null, 'type' => $type, 'op' => 'delete', 'result' => 'error', 'message' => $refused];
+        } else {
+            foreach (PostTypes::sourceIds(Schema::TYPES[$type]) as $id) {
+                if (!isset($listed[$id])) {
+                    $results[] = ['id' => $id, 'type' => $type, 'op' => 'delete'] + $this->delete($type, $id, $now, $runId, $trigger, true)->toArray();
+                }
+            }
+            if ($type !== 'companies') {
+                $untracked = get_posts(['post_type' => Schema::TYPES[$type], 'post_status' => 'any', 'numberposts' => -1, 'fields' => 'ids',
+                    'meta_query' => [['key' => PostTypes::SOURCE_ID, 'compare' => 'NOT EXISTS']]]);
+                foreach ($untracked as $postId) {
+                    $results[] = ['id' => null, 'type' => $type, 'op' => 'delete'] + $this->logged($type, '', $runId, $trigger, function () use ($type, $postId, $now): Outcome {
+                        $label = get_post_field('post_title', $postId, 'raw');
+                        $this->remove($type, null, $postId, $now);
+                        return new Outcome('deleted', 204, $label, message: 'Had no Data Hub ID.');
+                    })->toArray();
+                }
+            }
+        }
+        $this->relations->relinkAll();
+
+        return $results;
+    }
+
+    /**
+     * Batch or snapshot results as the API's reply: a count per result (created, updated, unchanged and deleted
+     * always), and only the rows worth a look: anything else, or with warnings.
+     */
+    public static function report(array $results): array
+    {
+        $problems = array_values(array_filter($results, fn (array $row): bool => !in_array($row['result'], self::COUNTED, true) || isset($row['warnings'])));
+
+        return array_merge(array_fill_keys(self::COUNTED, 0), array_count_values(array_column($results, 'result')), ['problems' => $problems]);
+    }
+
     public function postId(string $type, string $id): int
     {
         return PostTypes::postId(Schema::TYPES[$type], $id);
     }
 
-    private function write(string $type, string $id, array $input, bool $partial): Outcome
+    private function write(string $type, string $id, array $input, bool $partial, bool $force = false): Outcome
     {
         if (isset($input['id']) && $input['id'] !== $id) {
             return new Outcome('invalid', 422, errors: [['field' => 'id', 'message' => 'Must match the record ID it was sent to.']]);
@@ -127,11 +212,11 @@ final class Ingestor
         if (!$postId && $partial) {
             return new Outcome('not_found', 404, message: 'No record with this ID. Send the whole record with PUT to create it.');
         }
-        $deleted = $postId ? null : $this->tombstone($type, $id);
+        $deleted = $postId || $force ? null : $this->tombstone($type, $id);
         if ($deleted && $time <= $deleted) {
             return new Outcome('stale', 409, message: 'Not newer than the deletion of this record (' . $deleted->format(DATE_RFC3339) . ').');
         }
-        if ($postId && ($stale = $this->stale($postId, $time))) {
+        if ($postId && !$force && ($stale = $this->stale($postId, $time))) {
             return $stale;
         }
 
@@ -142,13 +227,14 @@ final class Ingestor
             : (string) ($new['name'] ?? '');
 
         if ($type === 'staff' && !(Schema::STATUSES[$new['status'] ?? ''] ?? true)) {
-            if ($postId) {
-                $this->remove($type, $id, $postId, $input['updated_at']);
-            } else {
+            $message = "Status '{$new['status']}' is not kept on the phone list.";
+            if (!$postId) { // Never held, or already removed: nothing changes, so a snapshot's leavers don't count as deleted each time.
                 $this->bury($type, $id, $input['updated_at']);
+                return new Outcome('unchanged', 200, $label, message: $message);
             }
+            $this->remove($type, $id, $postId, $input['updated_at']);
 
-            return new Outcome('deleted', 200, $label, message: "Status '{$new['status']}' is not kept on the phone list.");
+            return new Outcome('deleted', 200, $label, message: $message);
         }
 
         $hash = self::hash($new);
@@ -240,12 +326,14 @@ final class Ingestor
     }
 
     /**
-     * Delete a record, remembering it as deleted as of $updatedAt. A leaver's photo goes with them; a company's
-     * (set by hand, maybe used elsewhere) stays in the Media Library.
+     * Delete a record, remembering it (if it has a Data Hub ID) as deleted as of $updatedAt. A leaver's photo goes with
+     * them; a company's (set by hand, maybe used elsewhere) stays in the Media Library.
      */
-    private function remove(string $type, string $id, int $postId, string $updatedAt): void
+    private function remove(string $type, ?string $id, int $postId, string $updatedAt): void
     {
-        $this->bury($type, $id, $updatedAt);
+        if ($id !== null) {
+            $this->bury($type, $id, $updatedAt);
+        }
         $this->relations->beforeDelete($type, $postId);
         $photo = $type === 'staff' ? (int) get_post_thumbnail_id($postId) : 0;
         if ($photo) {

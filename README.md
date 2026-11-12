@@ -20,7 +20,6 @@ Create `.env` in the project root. It's gitignored, so never commit it. [wp-conf
 
 ```
 INTRANET_PHONELIST_API_SECRET=        # optional locally: defaults to local-dev-secret
-INTRANET_PHONELIST_QUEUE=             # optional: async (default) or sync
 INTRANET_PHONELIST_ORACLE_DSN=<host>:1521/<service_name>
 INTRANET_PHONELIST_ORACLE_USER=
 INTRANET_PHONELIST_ORACLE_PASSWORD=
@@ -28,22 +27,19 @@ INTRANET_PHONELIST_ORACLE_PASSWORD=
 
 Any WordPress constant can also be set there (`DB_*`, `WP_HOME`, `WP_DEBUG`, salts…); see `wp-config.php` for the full list and defaults.
 
-**Filling a local site:** `ddev wp phonelist oracle-import` (or **Import from Oracle** on the Jobs tab) reads Oracle and sends every division and staff member through the same ingest code as the API. `--staff=<id>` imports one person. It only exists when the Oracle constants are set; production leaves them blank.
+**Filling a local site:** `ddev wp phonelist oracle-import` (or **Import from Oracle** on the Logs tab) reads Oracle and sends every division and staff member through the same ingest code as the API. `--staff=<id>` imports one person. It only exists when the Oracle constants are set; production leaves them blank.
 
 ## How data gets in
 
-Everything goes through one place, `Ingest\Ingestor`, whether it comes from a single API request, a batch or snapshot job, or the Oracle import.
+Data Hub's main way in is a **snapshot**: every record of a type, sent whenever any of them changes. Everything goes through one place, `Ingest\Ingestor`, whether it comes from a snapshot, a batch, a single API request or the Oracle import.
 
 - **Identity:** records are matched only by their Data Hub `id`, stored in `_iphl_source_id`.
-- **Order:** every record carries `updated_at`. Older than what's stored is refused (`409`); identical data is `unchanged`.
+- **Order:** single records and batches carry `updated_at`. Older than what's stored is refused (`409`); identical data is `unchanged`. Snapshots skip this check.
 - **Status:** `active` staff are kept and `inactive` staff are removed. Any other value is refused (`422`), so an unexpected status can't remove anyone (`Schema::STATUSES`).
 - **Locked fields:** pushed fields can't be changed in the editor. Hand-set fields stay editable: a division's **Company**, and a staff member's **JWH Club**.
-- **Batches and snapshots** go into a queue table (`wp_iphl_jobs`):
-  - The request gets `202` straight away, and the job is processed after the response is sent.
-  - A cron task every minute picks up anything left behind.
-  - Jobs run one at a time. An interrupted one is simply run again: every item is safe to repeat.
-  - **Sync mode:** set `INTRANET_PHONELIST_QUEUE` to `sync` (like Laravel's sync driver) and the job runs inside the request instead, so the reply's `status` is already `done` or `failed` and errors show up in that request. Good for staging and debugging. A large snapshot then holds the request open, so leave production on `async`.
-  - On the server, run WP-Cron from the system cron so the sweep doesn't depend on site visits: `* * * * * wp cron event run --due-now --path=/path/to/wordpress`, as the web server's user.
+- **Snapshots and batches** are processed inside the request, with no queue. The reply counts what happened (`created`, `updated`, `unchanged`, `deleted`) and lists only the records that need a look (`problems`). Every item is safe to repeat, so an interrupted request is simply sent again.
+  - **A snapshot is the truth:** its records are written whatever their `updated_at` (optional in a snapshot), and every other record of that type is deleted, including staff and divisions with no Data Hub ID. Companies the intranet made itself are kept. Only a record with no usable `id` stops the deletions, since it couldn't be matched.
+  - **Timeouts:** a big snapshot can take a while. PHP's time limit is lifted for it, but the web server's own timeout (e.g. nginx `fastcgi_read_timeout`, Apache `Timeout`) must allow it too.
 
 ### Stored values
 
@@ -89,10 +85,9 @@ Locally the folder is `assets/staffPhotos/`, which is gitignored: never commit s
 
 - **Phonelist menu:** Companies, Divisions, Staff and JWH Club. Administrators only (`manage_options`), because staff records hold HR data. Records can be opened and edited but not added or deleted by hand.
 - **Settings → Phonelist:**
-  - **Jobs:** recent batches and snapshots, with a result per item. A waiting job has **Run now**, and a failed one **Retry** (also `wp phonelist job <id>`). Development sites also get **Import from Oracle** here.
-  - **Logs:** every API request and every record outcome (including `unchanged` and `stale`), filterable by job, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value.
+  - **Logs:** every API request (a snapshot's or batch's with its counts) and every record outcome (including `unchanged` and `stale`), filterable by run, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value. Development sites also get **Import from Oracle** here.
   - **Photos:** staff without a photo.
-- **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`), and finished jobs for 30. Both are pruned daily.
+- **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`) and pruned daily.
 
 ## Using it in a theme
 
@@ -208,7 +203,7 @@ Everything is under `/wp-json/phonelist/v2/`:
 | `GET /{companies\|divisions\|staff}` | Every record WordPress holds, in Data Hub's shape, sorted by name (`id` is null for records WordPress made, such as a company created for a new division). Staff can be filtered: `?name=&division_id=&department_code=` |
 | `GET /{companies\|divisions\|staff}/{id}` | One record, by Data Hub ID |
 | `GET /staff/{id}/team` | The people who report to that staff member, as records sorted by name |
-| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}`, `GET /jobs/{id}` | Data Hub's ingress, see `public/docs/` |
+| `PUT`, `PATCH`, `DELETE`, `POST /batch`, `PUT /{type}` | Data Hub's ingress, see `public/docs/` |
 
 **Access:** every route, reads included, needs `Authorization: Bearer <INTRANET_PHONELIST_API_SECRET>` (`Api\Token`). It's for Data Hub and us, not intranet users: WordPress logins and Application Passwords are refused, and records include `date_of_birth` and `home_phone`. Theme code reads through `Phonelist` in PHP instead. Local and development sites also accept requests with no `Authorization` header; staging and production always need the token.
 
@@ -225,11 +220,11 @@ Symfony-style PHP: PSR-4 (`ConstructiveMedia\IntranetPhonelist\` → `src/`), PS
 | `src/Schema.php` | The data contract: every field, validation, the status rule |
 | `src/PostTypes.php` | Post types, the JWH Club taxonomy, ACF fields (from `Schema`) |
 | `src/Relations.php` | Division, company and manager links |
-| `src/Ingest/` | `Ingestor` (the only writer of records), `Outcome` (one record's result), `Jobs` (queue), `Photos`, `PhoneNumbers`, `Log` (audit table) |
+| `src/Ingest/` | `Ingestor` (the only writer of records), `Outcome` (one record's result), `Photos`, `PhoneNumbers`, `Log` (audit table) |
 | `src/Api/` | `IngressController`, `ReadController`, `Token`, `Problem` |
 | `src/Oracle/` | `Adapter`: the development import |
-| `src/Admin/` | `SettingsPage` (Jobs, Logs, Photos), `Relationships` (boxes on the edit screens) |
-| `src/Cli/` | `club-import`, `job`, `oracle-import` |
+| `src/Admin/` | `SettingsPage` (Logs, Photos), `Relationships` (boxes on the edit screens) |
+| `src/Cli/` | `club-import`, `oracle-import` |
 | `src/Upgrade.php` | One-off v1 → v2 data upgrade, run on first load |
 | `src/Phonelist.php`, `src/Staff.php` | Public theme API and the value object it returns |
 
@@ -272,5 +267,4 @@ Tables and data upgrade themselves on load. Release archives leave out `.ddev/`,
 
 1. **Constants:** set `INTRANET_PHONELIST_API_SECRET` in the production `wp-config.php` (`openssl rand -hex 32`, a different one per site), shared with JWH IT and never stored in the database. Serve the API over HTTPS only. If requests with the token still get `401 Bearer token missing`, the web server is dropping the `Authorization` header: on Apache, keep WordPress's `RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]` line in `.htaccess`. Set `INTRANET_PHONELIST_PHOTOS_DIR` if you use a photo folder. Leave the Oracle constants out.
 2. **Install:** run `composer update`, then activate the plugin. Coming from v1, the first load upgrades the existing records in place, keeping their photos, club levels and division companies.
-3. **Cron:** add the system cron line for WP-Cron (see **How data gets in**).
-4. **Data:** ask Data Hub for a full snapshot of each type (divisions, then staff), and check the Jobs tab.
+3. **Data:** ask Data Hub for a full snapshot of each type (divisions, then staff), and check the replies' counts or the Logs tab.

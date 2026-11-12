@@ -3,10 +3,8 @@
 namespace ConstructiveMedia\IntranetPhonelist\Api;
 
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
-use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
 use ConstructiveMedia\IntranetPhonelist\Ingest\Outcome;
-use RuntimeException;
 use WP_HTTP_Response;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -18,12 +16,12 @@ use WP_REST_Server;
  *     PUT    /phonelist/v2/{type}/{id}   create or replace one record
  *     PATCH  /phonelist/v2/{type}/{id}   change the fields sent
  *     DELETE /phonelist/v2/{type}/{id}   remove (updated_at in the body or query)
- *     PUT    /phonelist/v2/{type}        snapshot: every record of that type ({"records": [...]})
+ *     PUT    /phonelist/v2/{type}        snapshot: every record of that type ({"records": [...]}), the main way in
  *     POST   /phonelist/v2/batch         up to 500 operations ({"operations": [...]})
- *     GET    /phonelist/v2/jobs/{id}     a batch or snapshot's progress and results
  *
- * {type} is companies, divisions or staff; {id} is the Data Hub ID. Every request under /phonelist/v2 is logged,
- * and every error is returned as Problem Details.
+ * {type} is companies, divisions or staff; {id} is the Data Hub ID. Snapshots and batches are processed in the
+ * request and answered with counts (see Ingestor::report()). Every request under /phonelist/v2 is logged, and every
+ * error is returned as Problem Details.
  */
 final class IngressController
 {
@@ -35,10 +33,10 @@ final class IngressController
     private const MAX_BATCH = 500;
     private const MAX_SNAPSHOT = 5000;
 
-    /** Groups this request's log entries: a job's ID for batches and snapshots, else one per request. */
+    /** Groups this request's log entries. */
     private ?string $runId = null;
 
-    public function __construct(private readonly Ingestor $ingestor, private readonly Jobs $jobs, private readonly Log $log)
+    public function __construct(private readonly Ingestor $ingestor, private readonly Log $log)
     {
     }
 
@@ -54,9 +52,6 @@ final class IngressController
             ]);
             register_rest_route(self::NAMESPACE, '/batch', [
                 ['methods' => WP_REST_Server::CREATABLE, 'callback' => [$this, 'batch'], 'permission_callback' => $token],
-            ]);
-            register_rest_route(self::NAMESPACE, '/jobs/(?P<id>[0-9a-f-]{36})', [
-                ['methods' => WP_REST_Server::READABLE, 'callback' => [$this, 'job'], 'permission_callback' => $token],
             ]);
         });
 
@@ -87,21 +82,16 @@ final class IngressController
     {
         $records = $this->items($request, 'records', self::MAX_SNAPSHOT);
 
-        return $records instanceof WP_REST_Response ? $records : $this->queue($request, 'snapshot', $request->get_url_params()['type'], $records);
+        return $records instanceof WP_REST_Response ? $records
+            : new WP_REST_Response(Ingestor::report($this->ingestor->snapshot($request->get_url_params()['type'], $records, $this->runId(), 'api')));
     }
 
     public function batch(WP_REST_Request $request): WP_REST_Response
     {
         $operations = $this->items($request, 'operations', self::MAX_BATCH);
 
-        return $operations instanceof WP_REST_Response ? $operations : $this->queue($request, 'batch', null, $operations);
-    }
-
-    public function job(WP_REST_Request $request): WP_REST_Response
-    {
-        $job = $this->jobs->get($request->get_url_params()['id']);
-
-        return $job ? new WP_REST_Response($job) : Problem::response(404, 'Not found', 'No job with this ID.');
+        return $operations instanceof WP_REST_Response ? $operations
+            : new WP_REST_Response(Ingestor::report($this->ingestor->batch($operations, $this->runId(), 'api')));
     }
 
     /**
@@ -137,10 +127,11 @@ final class IngressController
             }, (string) $data['message']);
         }
 
+        $counts = is_array($data) && isset($data['problems']) ? array_diff_key($data, ['problems' => 0]) : null; // a snapshot or batch
         $this->log->write($this->runId(), 'api', $status >= 500 ? 'error' : ($status >= 400 ? 'warning' : 'info'), 'request', null, null, $request->get_method() . ' ' . $request->get_route(), null, array_filter([
             'status' => $status,
             'duration_ms' => (int) round((microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true))) * 1000),
-            'idempotency_key' => $request->get_header('Idempotency-Key'),
+            'results' => $counts,
             'auth' => Token::result($request),
             'query' => $request->get_query_params() ?: null,
         ], fn ($value): bool => $value !== null));
@@ -187,26 +178,6 @@ final class IngressController
         }
 
         return $items;
-    }
-
-    private function queue(WP_REST_Request $request, string $kind, ?string $type, array $items): WP_REST_Response
-    {
-        $key = $request->get_header('Idempotency-Key');
-        try {
-            $job = $this->jobs->create($kind, $type, $items, $key === null || $key === '' ? null : substr($key, 0, 100), 'api');
-        } catch (RuntimeException $e) {
-            return Problem::response(503, 'Could not be queued', $e->getMessage() . ' Try again.');
-        }
-        $this->runId = $job['id'];
-        $url = rest_url(self::NAMESPACE . '/jobs/' . $job['id']);
-        $status = $job['existing'] ? $job['status'] : $this->jobs->dispatch($job['id']);
-
-        $response = new WP_REST_Response(['job' => $job['id'], 'status' => $status, 'links' => ['self' => $url]], $job['existing'] ? 200 : 202);
-        if (!$job['existing']) {
-            $response->header('Location', $url); // Not on a 200: PHP turns a 200 with a Location header into a 302.
-        }
-
-        return $response;
     }
 
     private function respond(Outcome $outcome): WP_REST_Response

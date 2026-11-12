@@ -3,7 +3,6 @@
 namespace ConstructiveMedia\IntranetPhonelist\Oracle;
 
 use ConstructiveMedia\IntranetPhonelist\Ingest\Ingestor;
-use ConstructiveMedia\IntranetPhonelist\Ingest\Jobs;
 use ConstructiveMedia\IntranetPhonelist\Schema;
 use DateTimeImmutable;
 use RuntimeException;
@@ -28,7 +27,7 @@ final class Adapter
 
     private const CONSTANTS = ['INTRANET_PHONELIST_ORACLE_DSN', 'INTRANET_PHONELIST_ORACLE_USER', 'INTRANET_PHONELIST_ORACLE_PASSWORD'];
 
-    public function __construct(private readonly Ingestor $ingestor, private readonly Jobs $jobs)
+    public function __construct(private readonly Ingestor $ingestor)
     {
     }
 
@@ -44,10 +43,10 @@ final class Adapter
     }
 
     /**
-     * Import everything (divisions, then staff, each as a snapshot job run straight away), or one staff member.
+     * Import everything (divisions, then staff, each as a snapshot), or one staff member.
      *
      * @param callable(string): void $progress
-     * @return array<string, array<array>> Type => a result per record (see Jobs::summary()).
+     * @return array<string, array<array>> Type => a result per record (see Ingestor::report()).
      */
     public function run(?string $staffId, string $trigger, callable $progress): array
     {
@@ -77,17 +76,10 @@ final class Adapter
         ));
 
         $results = [];
+        $runId = wp_generate_uuid4();
         foreach (['divisions' => $divisions, 'staff' => $staff] as $type => $records) {
             $progress(sprintf('Importing %d %s…', count($records), $type));
-            $job = $this->jobs->create('snapshot', $type, $records, null, $trigger);
-            if (!$this->jobs->process($job['id'])) {
-                throw new RuntimeException("Another job is running, so the $type snapshot was queued (job {$job['id']}); run the import again once it has finished.");
-            }
-            $job = $this->jobs->get($job['id']);
-            if ($job['status'] !== 'done') {
-                throw new RuntimeException("The $type snapshot (job {$job['id']}) didn't finish: " . ($job['error'] ?? $job['status']));
-            }
-            $results[$type] = $job['results'];
+            $results[$type] = $this->ingestor->snapshot($type, $records, $runId, $trigger);
         }
 
         return $results;

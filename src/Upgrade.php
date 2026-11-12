@@ -8,11 +8,11 @@ use ConstructiveMedia\IntranetPhonelist\Ingest\Log;
  * v1 → v2, in place: posts are kept (photos, JWH Club levels, hand-set division companies survive), their v1
  * field names become the v2 ones, v1-only fields and options go, and every record is marked as never updated
  * so Data Hub's first push always applies. 2.2: divisions move into their companies from Relations::COMPANIES.
- * Safe to run more than once.
+ * 2.4: the job queue (its table and every-minute cron) goes. Safe to run more than once.
  */
 final class Upgrade
 {
-    public const VERSION = '2.2.0';
+    public const VERSION = '2.4.0';
     public const EPOCH = '1970-01-01T00:00:00+00:00';
     private const VERSION_OPTION = 'intranet_phonelist_version';
     private const UPGRADING = 'intranet_phonelist_upgrading';
@@ -47,7 +47,7 @@ final class Upgrade
         PostTypes::DIVISION => ['div_code', 'div_name', 'fax', 'dx_no'],
     ];
 
-    private const OPTIONS = ['intranet_phonelist_companies', 'intranet_phonelist_last_sync', 'intranet_phonelist_lock'];
+    private const OPTIONS = ['intranet_phonelist_companies', 'intranet_phonelist_last_sync', 'intranet_phonelist_lock', 'intranet_phonelist_jobs_schema'];
 
     /**
      * Run once per site, the first time v2 loads. A request that finds another one upgrading leaves it to that one.
@@ -131,6 +131,8 @@ final class Upgrade
             delete_option($option);
         }
         wp_clear_scheduled_hook('intranet_phonelist_sync_background');
+        wp_clear_scheduled_hook('iphl_jobs_sweep');
+        $wpdb->query("DROP TABLE IF EXISTS {$wpdb->prefix}iphl_jobs");
         wp_cache_flush();
 
         return $counts;

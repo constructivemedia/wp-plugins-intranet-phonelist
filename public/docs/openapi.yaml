@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: JWH Intranet Phonelist API
-  version: 2.3.0
+  version: 2.4.0
   summary: Push companies, divisions and staff from Data Hub into the JWH intranet phone list.
   contact:
     name: Constructive Media
@@ -9,15 +9,18 @@ info:
     name: Proprietary
     identifier: LicenseRef-Proprietary
   description: |
-    Data Hub sends changes as they happen, and a full list of each type every night.
+    Data Hub sends a snapshot: every record of a type, whenever any of them has changed. The intranet works out the
+    rest: new records are created, changed ones updated, unchanged ones skipped, and ones no longer listed removed.
+    Data Hub doesn't need to track what changed.
 
     ## Rules
 
     1. **Records are matched by `id`**, the Data Hub ID of the company, division or staff member. Our own IDs are never
        returned, and records are never matched by name.
-    2. **Every record has `updated_at`**, as `YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM)`, e.g.
-       `2026-10-15T09:30:00+08:00`. Fractions past 6 digits are cut to 6. A record older than the one we hold, or not
-       newer than its deletion, is refused with `409`.
+    2. **Snapshots are the truth**: what a snapshot sends always wins, and `updated_at` is optional in one. Single
+       records and batches need `updated_at`, as `YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM)`, e.g.
+       `2026-10-15T09:30:00+08:00` (fractions past 6 digits are cut to 6). For those, a record older than the one we
+       hold, or not newer than its deletion, is refused with `409`.
     3. **Every request carries the token** (see Authentication).
     4. **Dates are `YYYY-MM-DD`**, booleans `true` or `false`, and empty values `null`. Field names are exactly as in the
        schemas. Unknown fields are ignored.
@@ -41,23 +44,24 @@ info:
 
     | To | Use |
     |---|---|
+    | **Send every record of one type (the main way in)** | `PUT /{type}` |
     | Create a record, or replace all of its fields | `PUT /{type}/{id}` |
     | Change some fields of a record | `PATCH /{type}/{id}` |
     | Remove a record | `DELETE /{type}/{id}` |
     | Send up to 500 changes of any type | `POST /batch` |
-    | Send every record of one type | `PUT /{type}` |
 
-    `{type}` is `companies`, `divisions` or `staff`. Send a snapshot of each type nightly: divisions first, then staff.
+    `{type}` is `companies`, `divisions` or `staff`. Check for changes as often as suits, e.g. every few minutes, and
+    when anything of a type has changed, send a snapshot of that type. Send divisions before staff. The single-record
+    and batch endpoints are there if they're ever useful; snapshots alone are enough.
 
-    ## Jobs and retries
+    ## Replies and retries
 
-    Batches and snapshots reply `202` with a job. Poll `GET /jobs/{id}` until `status` is `done` or `failed` (on a test
-    site the reply may already say so). Jobs run one at a time in the order received, and their results are kept for
-    30 days.
+    Snapshots and batches are processed while you wait, and reply `200` with how many records were created, updated,
+    left unchanged and deleted, plus `problems`: only the records that failed or have warnings. An empty `problems`
+    means everything went in. A large snapshot can take a while, so allow a few minutes before timing out.
 
-    - **Single records** can be resent as they are. The same `updated_at` comes back `unchanged`, an older one `409`.
-    - **Batches and snapshots** take an `Idempotency-Key` header, unique per request. Resending with the same key returns
-      the original job with `200`. Keys are kept for 30 days.
+    - **Everything is safe to resend.** Sending the same data again comes back `unchanged`. If a request fails or times
+      out, send it again.
     - **On `503` or a network error**, retry after 5 seconds, then 30 seconds, 2 minutes and 10 minutes.
 servers:
   - url: http://intranet.jwh.com.au.internal/wp-json/phonelist/v2
@@ -69,7 +73,7 @@ tags:
   - name: Push
     description: Create, change and remove single records.
   - name: Bulk
-    description: Batches, snapshots and their jobs.
+    description: Snapshots and batches.
   - name: Read
     description: What the intranet holds.
 
@@ -84,7 +88,8 @@ paths:
       summary: Create or replace a record
       description: |
         Send the whole record. Fields left out are cleared. `id` in the body is optional, but must match the URL if sent.
-        A staff member sent with `status: inactive` is removed, and the reply is `200` with `result: deleted`.
+        A staff member sent with `status: inactive` is removed, and the reply is `200` with `result: deleted`
+        (`unchanged` if they weren't on the phone list).
       requestBody:
         required: true
         content:
@@ -232,15 +237,23 @@ paths:
       tags: [Bulk]
       summary: Send a snapshot
       description: |
-        Every record of one type, up to 5,000. Each record is upserted. Records of this type that aren't in the snapshot
-        are deleted, unless they were updated after the snapshot's newest `updated_at`. Records the intranet created
-        itself are never deleted. The reply is a job.
+        Every record of one type, up to 5,000 and 5 MB. The snapshot is the truth: after it, the intranet holds exactly
+        these records. The reply counts what happened (see Replies and retries). Each record is matched by `id`:
 
-        Nothing is deleted if any record has no usable `id` (a non-empty string), if no record has a valid `updated_at`,
-        or if more than 10 records and more than 10% of those held would go. The job's results then end with an `error`
-        entry. An empty snapshot is refused with `422`.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        | Record | Result |
+        |---|---|
+        | Not held yet | `created` |
+        | Held, with different values | `updated` |
+        | Held, with the same values | `unchanged` (skipped) |
+        | Staff with `status: inactive` | `deleted`, or `unchanged` if already gone |
+        | Held but not in the snapshot | `deleted` |
+
+        - `updated_at` is optional in a snapshot and never blocks anything: what's sent always wins.
+        - Every staff member or division not in the snapshot is deleted, including any with no Data Hub ID. Companies
+          the intranet created itself are kept.
+        - Nothing is deleted if any record has no usable `id` (a non-empty string), because that record couldn't be
+          matched. `problems` then ends with an `error` entry.
+        - An empty snapshot is refused with `422`.
       requestBody:
         required: true
         content:
@@ -258,13 +271,21 @@ paths:
                       - $ref: '#/components/schemas/Staff'
                       - $ref: '#/components/schemas/Division'
                       - $ref: '#/components/schemas/Company'
-            example:
-              records:
-                - { id: BNB, updated_at: '2026-10-15T02:00:00+08:00', name: WA Country Builders (Bunbury), phone: '08 9721 0000', address_line1: 1 Example Street, address_line2: null, postcode: '6230', postal_address: null }
-                - { id: JWH, updated_at: '2026-10-15T02:00:00+08:00', name: JWH Group, phone: '08 9464 7800', address_line1: null, address_line2: null, postcode: null, postal_address: null }
+            examples:
+              staff:
+                summary: Staff (PUT /staff)
+                value:
+                  records:
+                    - { id: '10423', updated_at: '2026-10-15T09:30:00+08:00', first_name: Jane, last_name: Citizen, status: active, division_id: JWH, position: JWH Estimator, mobile: '0437 793 226' }
+                    - { id: '10424', updated_at: '2026-09-02T14:10:00+08:00', first_name: Sam, last_name: Example, status: active, division_id: BNB, reports_to: '10423' }
+              divisions:
+                summary: Divisions (PUT /divisions)
+                value:
+                  records:
+                    - { id: BNB, updated_at: '2026-10-15T02:00:00+08:00', name: WA Country Builders (Bunbury), phone: '08 9721 0000', address_line1: 1 Example Street, address_line2: null, postcode: '6230', postal_address: null }
+                    - { id: JWH, updated_at: '2026-10-15T02:00:00+08:00', name: JWH Group, phone: '08 9464 7800', address_line1: null, address_line2: null, postcode: null, postal_address: null }
       responses:
-        '200': { $ref: '#/components/responses/JobAccepted' }
-        '202': { $ref: '#/components/responses/JobAccepted' }
+        '200': { $ref: '#/components/responses/Report' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413': { $ref: '#/components/responses/TooLarge' }
@@ -322,10 +343,9 @@ paths:
       tags: [Bulk]
       summary: Send a batch
       description: |
-        Up to 500 operations of any type. They run in the background, in order, and each succeeds or fails on its own.
-        A staff member can arrive before their division or manager; they're linked once both exist.
-      parameters:
-        - $ref: '#/components/parameters/IdempotencyKey'
+        Up to 500 operations of any type, each with an `op`: `put` (create or replace), `patch` (change the fields
+        sent) or `delete`. They run in order, and each succeeds or fails on its own. A staff member can arrive before
+        their division or manager; they're linked once both exist. The reply counts what happened, as for a snapshot.
       requestBody:
         required: true
         content:
@@ -345,45 +365,12 @@ paths:
                 - { op: patch, type: staff, id: '10423', data: { updated_at: '2026-10-15T09:30:00+08:00', division_id: BNB } }
                 - { op: delete, type: staff, id: '10099', data: { updated_at: '2026-10-15T09:30:00+08:00' } }
       responses:
-        '200': { $ref: '#/components/responses/JobAccepted' }
-        '202': { $ref: '#/components/responses/JobAccepted' }
+        '200': { $ref: '#/components/responses/Report' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '413': { $ref: '#/components/responses/TooLarge' }
         '422': { $ref: '#/components/responses/Invalid' }
         '503': { $ref: '#/components/responses/Unavailable' }
-
-  /jobs/{id}:
-    get:
-      operationId: getJob
-      tags: [Bulk]
-      summary: Check a job
-      description: Poll until `status` is `done` or `failed`. `done` and `total` show progress.
-      parameters:
-        - { name: id, in: path, required: true, description: The job ID from the 202 reply., schema: { type: string, format: uuid } }
-      responses:
-        '200':
-          description: The job.
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Job' }
-              example:
-                id: 3f1c2a9e-8b7d-4c1e-9f00-1a2b3c4d5e6f
-                kind: snapshot
-                type: staff
-                status: done
-                triggered_by: api
-                total: 2
-                done: 2
-                error: null
-                created_at: '2026-10-15T01:30:00Z'
-                finished_at: '2026-10-15T01:30:04Z'
-                results:
-                  - { id: '10423', type: staff, op: put, result: updated }
-                  - { id: '10424', type: staff, op: put, result: invalid, errors: [{ field: status, message: 'Must be one of: active, inactive.' }] }
-                  - { id: null, type: staff, op: delete, result: error, message: 'The snapshot would delete 40 of 300 records, more than allowed at once, so nothing was deleted.' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '404': { $ref: '#/components/responses/NotFound' }
 
   /club:
     get:
@@ -435,15 +422,6 @@ components:
       description: The Data Hub ID (1–64 characters).
       schema: { type: string, minLength: 1, maxLength: 64 }
       example: '10423'
-    IdempotencyKey:
-      name: Idempotency-Key
-      in: header
-      required: false
-      description: |
-        Unique per request. Resending with the same key returns the original job (`200`). Longer keys are cut to 100
-        characters. Keys are kept for 30 days.
-      schema: { type: string, maxLength: 100 }
-      example: nightly-staff-2026-10-15
 
   examples:
     StaffRecord:
@@ -498,24 +476,29 @@ components:
             created: { value: { result: created } }
             unchanged_with_warning: { value: { result: unchanged, warnings: [{ field: mobile, message: "Not a phone number we could read; kept as sent." }] } }
             inactive: { value: { result: deleted, message: "Status 'inactive' is not kept on the phone list." } }
-    JobAccepted:
-      description: '`202` for a new job (with a `Location` header), `200` for a repeated `Idempotency-Key`.'
-      headers:
-        Location:
-          description: The job's URL (new jobs only).
-          schema: { type: string, format: uri }
+    Report:
+      description: Processed. How many records had each result, and the ones that need a look.
       content:
         application/json:
-          schema:
-            type: object
-            properties:
-              job: { type: string, format: uuid }
-              status: { type: string, enum: [queued, running, done, failed] }
-              links:
-                type: object
-                properties:
-                  self: { type: string, format: uri }
-          example: { job: 3f1c2a9e-8b7d-4c1e-9f00-1a2b3c4d5e6f, status: queued, links: { self: 'http://intranet.jwh.com.au.internal/wp-json/phonelist/v2/jobs/3f1c2a9e-8b7d-4c1e-9f00-1a2b3c4d5e6f' } }
+          schema: { $ref: '#/components/schemas/Report' }
+          examples:
+            all_good:
+              summary: Everything went in
+              value: { created: 2, updated: 14, unchanged: 1210, deleted: 1, problems: [] }
+            with_problems:
+              summary: Some records need a look
+              value:
+                created: 0
+                updated: 3
+                unchanged: 1208
+                deleted: 0
+                invalid: 2
+                error: 1
+                problems:
+                  - { id: '10424', type: staff, op: put, result: invalid, errors: [{ field: status, message: 'Must be one of: active, inactive.' }] }
+                  - { id: null, type: staff, op: put, result: invalid, errors: [{ field: id, message: 'Required: the Data Hub ID, as a string.' }] }
+                  - { id: '10440', type: staff, op: put, result: updated, warnings: [{ field: mobile, message: "Not a phone number we could read; kept as sent." }] }
+                  - { id: null, type: staff, op: delete, result: error, message: 'Some records have no usable id (a non-empty string), so nothing was deleted.' }
     BadRequest:
       description: The body isn't valid JSON, or isn't a JSON object.
       content:
@@ -529,7 +512,7 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
           example: { type: about:blank, title: Unauthorized, status: 401, detail: Bearer token invalid. }
     NotFound:
-      description: No record or job with this ID.
+      description: No record with this ID.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
@@ -559,17 +542,17 @@ components:
           schema: { $ref: '#/components/schemas/Problem' }
           example: { type: about:blank, title: Could not be saved, status: 500, detail: '…' }
     Unavailable:
-      description: The token isn't set up on the site, or a job couldn't be queued. Retry with back-off.
+      description: The API isn't set up on the site (no token configured). Retry with back-off, and let us know.
       content:
         application/problem+json:
           schema: { $ref: '#/components/schemas/Problem' }
-          example: { type: about:blank, title: Could not be queued, status: 503, detail: 'The job could not be stored: … Try again.' }
+          example: { type: about:blank, title: Request failed, status: 503, detail: The API is not configured on this site. }
 
   schemas:
     UpdatedAt:
       type: string
       format: date-time
-      description: 'YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM), e.g. 2026-10-15T09:30:00+08:00.'
+      description: 'YYYY-MM-DDTHH:MM:SS[.fraction](Z|±HH:MM), e.g. 2026-10-15T09:30:00+08:00. Optional in snapshots.'
     Date:
       type: [string, 'null']
       format: date
@@ -649,29 +632,24 @@ components:
           type: object
           description: The record (put), the fields to change (patch), or only `updated_at` (delete). `updated_at` is always required.
 
-    Job:
+    Report:
       type: object
+      description: |
+        A count per result. `created`, `updated`, `unchanged` and `deleted` are always present; `stale`, `invalid`,
+        `not_found` and `error` only when they happened.
+      required: [created, updated, unchanged, deleted, problems]
       properties:
-        id: { type: string, format: uuid }
-        kind: { type: string, enum: [batch, snapshot] }
-        type: { type: [string, 'null'], enum: [companies, divisions, staff, null], description: The snapshot's type. `null` for a batch. }
-        status:
-          type: string
-          enum: [queued, running, done, failed]
-          x-enum-descriptions:
-            queued: Waiting to run.
-            running: Running. See done and total.
-            done: Finished. See results.
-            failed: Gave up after 3 attempts. See error.
-        triggered_by: { type: string, enum: [api, manual], description: '`api` for this API, `manual` for an import started in WordPress.' }
-        total: { type: integer, description: Items in the job. }
-        done: { type: integer, description: Items processed so far. }
-        error: { type: [string, 'null'] }
-        created_at: { type: string, format: date-time, description: 'UTC, e.g. 2026-10-15T01:30:00Z.' }
-        finished_at: { type: [string, 'null'], format: date-time }
-        results:
+        created: { type: integer }
+        updated: { type: integer }
+        unchanged: { type: integer }
+        deleted: { type: integer, description: 'Removed: missing from the snapshot, status inactive, or a delete.' }
+        stale: { type: integer }
+        invalid: { type: integer }
+        not_found: { type: integer }
+        error: { type: integer }
+        problems:
           type: array
-          description: Filled in when the job finishes.
+          description: Only the records that didn't go in, or went in with warnings. Empty when everything went in cleanly.
           items:
             type: object
             properties:
@@ -682,10 +660,10 @@ components:
                 type: string
                 enum: [created, updated, unchanged, deleted, stale, invalid, not_found, error]
                 x-enum-descriptions:
-                  created: New record.
-                  updated: Changed.
-                  unchanged: Same data. updated_at refreshed.
-                  deleted: Removed, already gone, or status inactive.
+                  created: New record (listed only for its warnings).
+                  updated: Changed (listed only for its warnings).
+                  unchanged: Same data (listed only for its warnings).
+                  deleted: Removed (listed only for its warnings).
                   stale: Older than what we hold. Nothing changed.
                   invalid: Failed validation. See errors.
                   not_found: PATCH of a record we don't hold.
