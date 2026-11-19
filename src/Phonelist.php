@@ -31,11 +31,21 @@ final class Phonelist
      */
     public static function staff(?string $name = null, ?string $division = null, ?string $department = null): array
     {
-        $staff = array_values(array_filter(
-            array_map(fn (WP_Post $post): Staff => self::toStaff($post), self::staffPosts()),
-            fn (Staff $person): bool => self::matches($person, $name, $division, $department),
-        ));
-        usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
+        return array_values(array_filter(self::everyone(), fn (Staff $person): bool => self::matches($person, $name, $division, $department)));
+    }
+
+    /**
+     * Every staff member, sorted by name. Built once per request, so manager() and team() are cheap inside a loop.
+     *
+     * @return Staff[]
+     */
+    private static function everyone(): array
+    {
+        static $staff = null;
+        if ($staff === null) {
+            $staff = array_map(fn (WP_Post $post): Staff => self::toStaff($post), self::staffPosts());
+            usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
+        }
 
         return $staff;
     }
