@@ -31,23 +31,29 @@ final class Phonelist
      */
     public static function staff(?string $name = null, ?string $division = null, ?string $department = null): array
     {
-        return array_values(array_filter(self::everyone(), fn (Staff $person): bool => self::matches($person, $name, $division, $department)));
+        return array_values(array_filter(self::everyone()[0], fn (Staff $person): bool => self::matches($person, $name, $division, $department)));
     }
 
     /**
-     * Every staff member, sorted by name. Built once per request, so manager() and team() are cheap inside a loop.
+     * Every staff member sorted by name, and keyed by Data Hub id. Built once and reused until a post, its fields or a
+     * term changes, or the day turns over (birthdays and leave depend on today), so manager() and team() are cheap
+     * inside a loop. Kept for the request; across requests too when the site has a persistent object cache.
      *
-     * @return Staff[]
+     * @return array{0: Staff[], 1: array<string, Staff>}
      */
     private static function everyone(): array
     {
-        static $staff = null;
-        if ($staff === null) {
-            $staff = array_map(fn (WP_Post $post): Staff => self::toStaff($post), self::staffPosts());
+        $today = new DateTimeImmutable('today', wp_timezone());
+        $key = 'staff:' . $today->format('Ymd') . ':' . wp_cache_get_last_changed('posts') . ':' . wp_cache_get_last_changed('terms');
+        $cached = wp_cache_get($key, 'intranet_phonelist');
+        if ($cached === false) {
+            $staff = array_map(fn (WP_Post $post): Staff => self::toStaff($post, $today), self::staffPosts());
             usort($staff, fn (Staff $a, Staff $b): int => strcasecmp($a->name, $b->name));
+            $cached = [$staff, array_column(array_filter($staff, fn (Staff $person): bool => $person->id !== ''), null, 'id')];
+            wp_cache_set($key, $cached, 'intranet_phonelist', DAY_IN_SECONDS);
         }
 
-        return $staff;
+        return $cached;
     }
 
     /**
@@ -97,8 +103,7 @@ final class Phonelist
                 'members' => [],
             ];
         }
-        foreach (self::staffPosts() as $post) {
-            $person = self::toStaff($post);
+        foreach (self::everyone()[0] as $person) {
             if (isset($club[$person->club])) {
                 $club[$person->club]['members'][] = $person;
             }
@@ -127,7 +132,7 @@ final class Phonelist
         foreach (self::staffPosts() as $post) {
             $next = self::nextBirthday($post->ID, $today);
             if ($next && $today->diff($next)->days <= $days) {
-                $birthdays[] = self::toStaff($post, daysUntil: $today->diff($next)->days);
+                $birthdays[] = self::toStaff($post, $today, $today->diff($next)->days);
             }
         }
 
@@ -147,7 +152,7 @@ final class Phonelist
         foreach (self::staffPosts() as $post) {
             [$next] = self::nextAnniversary($post->ID, $today);
             if ($next && $today->diff($next)->days <= $days) {
-                $anniversaries[] = self::toStaff($post, daysUntil: $today->diff($next)->days);
+                $anniversaries[] = self::toStaff($post, $today, $today->diff($next)->days);
             }
         }
 
@@ -161,7 +166,7 @@ final class Phonelist
      */
     public static function onLeave(): array
     {
-        $away = array_values(array_filter(self::staff(), fn (Staff $person): bool => $person->onLeaveUntil !== null));
+        $away = array_values(array_filter(self::everyone()[0], fn (Staff $person): bool => $person->onLeaveUntil !== null));
         usort($away, fn (Staff $a, Staff $b): int => [$a->onLeaveUntil, $a->name] <=> [$b->onLeaveUntil, $b->name]);
 
         return $away;
@@ -174,7 +179,7 @@ final class Phonelist
      */
     public static function team(string $id): array
     {
-        return $id === '' ? [] : array_values(array_filter(self::staff(), fn (Staff $person): bool => $person->reportsTo === $id));
+        return $id === '' ? [] : array_values(array_filter(self::everyone()[0], fn (Staff $person): bool => $person->reportsTo === $id));
     }
 
     /**
@@ -182,7 +187,7 @@ final class Phonelist
      */
     public static function manager(string $id): ?Staff
     {
-        $byId = array_column(self::staff(), null, 'id');
+        $byId = self::everyone()[1];
 
         return $byId[$byId[$id]->reportsTo ?? ''] ?? null;
     }
@@ -195,7 +200,7 @@ final class Phonelist
     public static function divisions(): array
     {
         $staff = [];
-        foreach (self::staff() as $person) {
+        foreach (self::everyone()[0] as $person) {
             $staff[$person->divisionId][] = $person;
         }
 
@@ -273,9 +278,11 @@ final class Phonelist
      */
     private static function staffPosts(): array
     {
-        // Loads every staff post (~430) per call; add a transient or a DOB index if it shows up in profiling.
         $query = new WP_Query(['post_type' => PostTypes::STAFF, 'posts_per_page' => -1, 'post_status' => 'publish', 'no_found_rows' => true]);
         update_post_thumbnail_cache($query); // Load every photo in one go rather than one query per person.
+        // Same for the division and company names, rather than one query per division.
+        $linked = array_map(fn (WP_Post $post): array => [(int) get_post_meta($post->ID, 'division', true), (int) get_post_meta($post->ID, 'company', true)], $query->posts);
+        _prime_post_caches(array_filter(array_unique(array_merge(...$linked))), false, false);
 
         return $query->posts;
     }
@@ -349,14 +356,13 @@ final class Phonelist
         return $attachmentId ? (wp_get_attachment_image_url($attachmentId, 'full') ?: null) : null;
     }
 
-    private static function toStaff(WP_Post $post, ?int $daysUntil = null): Staff
+    private static function toStaff(WP_Post $post, DateTimeImmutable $today, ?int $daysUntil = null): Staff
     {
         $meta = fn (string $key): string => trim((string) get_post_meta($post->ID, $key, true));
         $title = fn (string $link): string => (int) $meta($link) ? get_post_field('post_title', (int) $meta($link), 'raw') : '';
         $photoId = (int) get_post_thumbnail_id($post->ID);
         $club = get_the_terms($post, PostTypes::CLUB_TAXONOMY); // Cached by the staff query.
-        $date = fn (string $key): ?DateTimeImmutable => DateTimeImmutable::createFromFormat('!Ymd', $meta($key), wp_timezone()) ?: null;
-        $today = new DateTimeImmutable('today', wp_timezone());
+        $date = fn (string $key): ?DateTimeImmutable => DateTimeImmutable::createFromFormat('!Ymd', $meta($key), $today->getTimezone()) ?: null;
         $leave = $date('on_leave_until');
         [$anniversary, $years] = self::nextAnniversary($post->ID, $today);
 
