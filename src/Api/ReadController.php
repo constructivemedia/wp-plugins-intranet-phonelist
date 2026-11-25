@@ -87,7 +87,7 @@ final class ReadController
         if (!$postId) {
             return Problem::response(404, 'Not found', 'No record with this ID.');
         }
-        $posts = get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC', 'meta_key' => 'reports_to', 'meta_value' => $id, 'post__not_in' => [$postId]]);
+        $posts = get_posts(['post_type' => PostTypes::STAFF, 'numberposts' => -1, 'orderby' => 'title', 'order' => 'ASC', 'meta_key' => 'manager', 'meta_value' => (string) $postId]);
 
         return new WP_REST_Response(array_map(fn (WP_Post $post): array => self::record('staff', $post), $posts));
     }

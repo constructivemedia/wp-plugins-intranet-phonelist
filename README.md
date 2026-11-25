@@ -37,7 +37,7 @@ Data Hub's main way in is a **snapshot**: every record of a type, sent whenever 
 - **Order:** single records and batches carry `updated_at`. Older than what's stored is refused (`409`); identical data is `unchanged`. Snapshots skip this check.
 - **Status:** `active` staff are kept and `inactive` staff are removed. Any other value is refused (`422`), so an unexpected status can't remove anyone (`Schema::STATUSES`).
 - **Locked fields:** pushed fields can't be changed in the editor. Hand-set fields stay editable: a division's **Company**, and a staff member's **JWH Club**.
-- **Snapshots and batches** are processed inside the request, with no queue. The reply counts what happened (`created`, `updated`, `unchanged`, `deleted`) and lists only the records that need a look (`problems`). Every item is safe to repeat, so an interrupted request is simply sent again.
+- **Snapshots and batches** are processed inside the request, with no queue. The reply counts what happened (`created`, `updated`, `unchanged`, `deleted`), gives the IDs created, updated and deleted (`ids`), and lists only the records that need a look (`problems`). Every item is safe to repeat, so an interrupted request is simply sent again.
   - **A snapshot is the truth:** its records are written whatever their `updated_at` (optional in a snapshot), and every other record of that type is deleted, including staff and divisions with no Data Hub ID. Companies the intranet made itself are kept. Only a record with no usable `id` stops the deletions, since it couldn't be matched.
   - **Timeouts:** a big snapshot can take a while. PHP's time limit is lifted for it, but the web server's own timeout (e.g. nginx `fastcgi_read_timeout`, Apache `Timeout`) must allow it too.
 
@@ -60,7 +60,7 @@ Stored as post IDs, so renames never need updating:
 |---|---|---|---|
 | `division` | staff | the division | `division_id` |
 | `company` | staff | the company | the division's Company |
-| `manager` | staff | the manager | `reports_to` (the manager's staff id) |
+| `manager` | staff | the manager | `reports_to` (the manager's position number) |
 | `company` | division | the company | new divisions get theirs from `Relations::COMPANIES` (else one with the division's name), created if needed; can be changed by hand |
 
 - **When they're set:** links are made when a record is written, in whatever order records arrive. Staff waiting on a new division or manager are linked when it arrives.
@@ -85,7 +85,7 @@ Locally the folder is `assets/staffPhotos/`, which is gitignored: never commit s
 
 - **Phonelist menu:** Companies, Divisions, Staff and JWH Club. Administrators only (`manage_options`), because staff records hold HR data. Records can be opened and edited but not added or deleted by hand.
 - **Settings → Phonelist:**
-  - **Logs:** every API request (a snapshot's or batch's with its counts) and every record outcome (including `unchanged` and `stale`), filterable by run, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value. Development sites also get **Import from Oracle** here.
+  - **Logs:** an audit trail: every API request (a snapshot's or batch's with its counts) and every record created, updated (the fields that changed), deleted (the data removed) or refused (`stale`, `invalid`…). `unchanged` records aren't logged; the request's counts cover them. Filterable by run, level and action. **View** shows the details as JSON. Date of birth and home phone are recorded as "(changed)", never by value. Development sites also get **Import from Oracle** here.
   - **Photos:** staff without a photo.
 - **Retention:** logs are kept for 90 days (`INTRANET_PHONELIST_LOG_DAYS`) and pruned daily.
 
@@ -172,7 +172,7 @@ People come back from every method above as `Staff` objects, with these read-onl
 - `name`, `firstName`, `lastName`
 - `position` (as in HR: `PHM Sales Manager`), `jobTitle` (without the division code: `Sales Manager`)
 - `email`, `mobile`, `phone` (direct), `extension` (VoIP)
-- `divisionId`, `division`, `company`, `reportsTo` (their manager's staff id)
+- `divisionId`, `division`, `company`, `reportsTo` (their manager's staff id, resolved from `reports_to`)
 - `departmentCode`, `department`
 - `onLeaveUntil` (the last day of their leave, or null when not on leave)
 - `birthday` (their next birthday; null when unknown or hidden in HR)

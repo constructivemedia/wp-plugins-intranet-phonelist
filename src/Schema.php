@@ -70,7 +70,7 @@ final class Schema
                 'department' => $field('Department', 75, 'Role'),
                 'division_id' => $field('Division ID', 33, 'Role'),
                 'company_id' => $field('Company ID', 33, 'Role'),
-                'reports_to' => $field('Reports To (Staff ID)', 34, 'Role'),
+                'reports_to' => $field('Reports To (Position No.)', 34, 'Role'),
                 'status' => $field('Status', 33, 'Employment', required: true),
                 'start_date' => $field('Start Date', 33, 'Employment', 'date'),
                 'on_leave_until' => $field('On Leave Until', 34, 'Employment', 'date'),

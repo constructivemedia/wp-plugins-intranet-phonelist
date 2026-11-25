@@ -10,7 +10,8 @@ use Throwable;
 
 /**
  * The only code that writes companies, divisions and staff. Used by the API (single records, batches and snapshots)
- * and by the Oracle import. Every outcome is logged, one row per record.
+ * and by the Oracle import. Every outcome but 'unchanged' is logged, one row per record: created and updated with
+ * the fields that changed, deleted with the data removed.
  *
  * Records are found by their Data Hub ID. Each write is checked against the updated_at last applied:
  * older is refused (stale), the same data is 'unchanged', anything else is written. Deletions are remembered for a
@@ -71,9 +72,8 @@ final class Ingestor
                 return $stale;
             }
             $label = get_post_field('post_title', $postId, 'raw');
-            $this->remove($type, $id, $postId, $updatedAt);
 
-            return new Outcome('deleted', 204, $label);
+            return new Outcome('deleted', 204, $label, $this->remove($type, $id, $postId, $updatedAt));
         });
     }
 
@@ -139,9 +139,11 @@ final class Ingestor
     {
         @set_time_limit(0); // A large snapshot can outlast PHP's default limit.
         ignore_user_abort(true); // Finish (and do the deletions) even if the sender stops waiting.
+
         $now = (new DateTimeImmutable('now', wp_timezone()))->format(DATE_RFC3339);
         $results = [];
         $listed = [];
+
         foreach (array_values($records) as $record) {
             $record = is_array($record) ? $record : [];
             $id = is_string($record['id'] ?? null) && $record['id'] !== '' ? $record['id'] : null;
@@ -159,23 +161,25 @@ final class Ingestor
             $this->log->write($runId, $trigger, 'error', 'snapshot_refused', Schema::TYPES[$type], null, $type, $refused);
             $results[] = ['id' => null, 'type' => $type, 'op' => 'delete', 'result' => 'error', 'message' => $refused];
         } else {
+
             foreach (PostTypes::sourceIds(Schema::TYPES[$type]) as $id) {
                 if (!isset($listed[$id])) {
                     $results[] = ['id' => $id, 'type' => $type, 'op' => 'delete'] + $this->delete($type, $id, $now, $runId, $trigger, true)->toArray();
                 }
             }
+
             if ($type !== 'companies') {
                 $untracked = get_posts(['post_type' => Schema::TYPES[$type], 'post_status' => 'any', 'numberposts' => -1, 'fields' => 'ids',
                     'meta_query' => [['key' => PostTypes::SOURCE_ID, 'compare' => 'NOT EXISTS']]]);
                 foreach ($untracked as $postId) {
                     $results[] = ['id' => null, 'type' => $type, 'op' => 'delete'] + $this->logged($type, '', $runId, $trigger, function () use ($type, $postId, $now): Outcome {
                         $label = get_post_field('post_title', $postId, 'raw');
-                        $this->remove($type, null, $postId, $now);
-                        return new Outcome('deleted', 204, $label, message: 'Had no Data Hub ID.');
+                        return new Outcome('deleted', 204, $label, $this->remove($type, null, $postId, $now), message: 'Had no Data Hub ID.');
                     })->toArray();
                 }
             }
         }
+
         $this->relations->relinkAll();
 
         return $results;
@@ -183,13 +187,17 @@ final class Ingestor
 
     /**
      * Batch or snapshot results as the API's reply: a count per result (created, updated, unchanged and deleted
-     * always), and only the rows worth a look: anything else, or with warnings.
+     * always), the IDs created, updated and deleted, and only the rows worth a look: anything else, or with warnings.
      */
     public static function report(array $results): array
     {
         $problems = array_values(array_filter($results, fn (array $row): bool => !in_array($row['result'], self::COUNTED, true) || isset($row['warnings'])));
+        $ids = [];
+        foreach (['created', 'updated', 'deleted'] as $result) {
+            $ids[$result] = array_values(array_filter(array_column(array_filter($results, fn (array $row): bool => $row['result'] === $result), 'id'), 'is_string'));
+        }
 
-        return array_merge(array_fill_keys(self::COUNTED, 0), array_count_values(array_column($results, 'result')), ['problems' => $problems]);
+        return array_merge(array_fill_keys(self::COUNTED, 0), array_count_values(array_column($results, 'result')), ['ids' => $ids, 'problems' => $problems]);
     }
 
     public function postId(string $type, string $id): int
@@ -232,9 +240,7 @@ final class Ingestor
                 $this->bury($type, $id, $input['updated_at']);
                 return new Outcome('unchanged', 200, $label, message: $message);
             }
-            $this->remove($type, $id, $postId, $input['updated_at']);
-
-            return new Outcome('deleted', 200, $label, message: $message);
+            return new Outcome('deleted', 200, $label, $this->remove($type, $id, $postId, $input['updated_at']), message: $message);
         }
 
         $hash = self::hash($new);
@@ -280,7 +286,7 @@ final class Ingestor
     }
 
     /**
-     * Run $work and log its outcome as one row; anything thrown becomes an 'error' outcome.
+     * Run $work and log its outcome as one row (except 'unchanged'); anything thrown becomes an 'error' outcome.
      * Titles are saved as sent: WordPress would otherwise escape them ('&' → '&amp;') when no user is logged in.
      *
      * @param callable(): Outcome $work
@@ -306,6 +312,9 @@ final class Ingestor
             $outcome->status >= 400, $outcome->warnings !== [] => 'warning',
             default => 'info',
         };
+        if ($outcome->result === 'unchanged') {
+            return $outcome; // Not an event: the request row counts them, and the reply lists any warnings.
+        }
         $context = array_filter(['changes' => $outcome->changes, 'errors' => $outcome->errors, 'warnings' => $outcome->warnings]);
         $this->log->write($runId, $trigger, $level, $outcome->result, Schema::TYPES[$type] ?? null, $id !== '' ? $id : null, $outcome->label, $outcome->message, $context ?: null);
 
@@ -328,9 +337,12 @@ final class Ingestor
     /**
      * Delete a record, remembering it (if it has a Data Hub ID) as deleted as of $updatedAt. A leaver's photo goes with
      * them; a company's (set by hand, maybe used elsewhere) stays in the Media Library.
+     *
+     * @return array<string, mixed> What was removed, as changes to nothing, for the log.
      */
-    private function remove(string $type, ?string $id, int $postId, string $updatedAt): void
+    private function remove(string $type, ?string $id, int $postId, string $updatedAt): array
     {
+        $old = Schema::stored($type, $postId);
         if ($id !== null) {
             $this->bury($type, $id, $updatedAt);
         }
@@ -340,6 +352,8 @@ final class Ingestor
             wp_delete_attachment($photo, true);
         }
         wp_delete_post($postId, true);
+
+        return self::changes($old, array_fill_keys(array_keys($old), null));
     }
 
     /**

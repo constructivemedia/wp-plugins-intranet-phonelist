@@ -383,7 +383,7 @@ final class Phonelist
             company: $title('company'),
             departmentCode: $meta('department_code'),
             department: $meta('department'),
-            reportsTo: $meta('reports_to') === $meta(PostTypes::SOURCE_ID) ? '' : $meta('reports_to'), // Never their own manager.
+            reportsTo: (int) $meta('manager') ? (string) get_post_meta((int) $meta('manager'), PostTypes::SOURCE_ID, true) : '', // From the manager link (never themselves).
             onLeaveUntil: $leave && $leave >= $today ? $leave : null,
             birthday: self::nextBirthday($post->ID, $today),
             daysUntil: $daysUntil,

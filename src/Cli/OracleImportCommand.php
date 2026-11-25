@@ -37,7 +37,7 @@ final class OracleImportCommand
         }
 
         foreach ($results as $type => $typeResults) {
-            $counts = array_diff_key(Ingestor::report($typeResults), ['problems' => 0]);
+            $counts = array_diff_key(Ingestor::report($typeResults), ['ids' => 0, 'problems' => 0]);
             WP_CLI::log(ucfirst($type) . ': ' . implode(', ', array_map(fn (string $result, int $n): string => "$n $result", array_keys($counts), $counts)));
         }
         WP_CLI::success('Imported (see the Logs tab).');

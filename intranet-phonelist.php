@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Intranet Phonelist
  * Description: JWH's companies, divisions and staff for the intranet phone list, pushed in by Data Hub.
- * Version:     2.4.2
+ * Version:     2.5.0
  * Author:      Constructive Media
  * Requires PHP: 8.4
  * Requires Plugins: advanced-custom-fields

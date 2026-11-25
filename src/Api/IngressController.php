@@ -127,7 +127,7 @@ final class IngressController
             }, (string) $data['message']);
         }
 
-        $counts = is_array($data) && isset($data['problems']) ? array_diff_key($data, ['problems' => 0]) : null; // a snapshot or batch
+        $counts = is_array($data) && isset($data['problems']) ? array_diff_key($data, ['ids' => 0, 'problems' => 0]) : null; // a snapshot or batch
         $this->log->write($this->runId(), 'api', $status >= 500 ? 'error' : ($status >= 400 ? 'warning' : 'info'), 'request', null, null, $request->get_method() . ' ' . $request->get_route(), null, array_filter([
             'status' => $status,
             'duration_ms' => (int) round((microtime(true) - ($_SERVER['REQUEST_TIME_FLOAT'] ?? microtime(true))) * 1000),

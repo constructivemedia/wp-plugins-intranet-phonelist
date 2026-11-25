@@ -5,7 +5,8 @@ namespace ConstructiveMedia\IntranetPhonelist\Ingest;
 use wpdb;
 
 /**
- * Audit log table: every request and record outcome, with a level and an optional JSON payload.
+ * Audit log table: every request, and every record created, updated, deleted or refused (not 'unchanged'), with a
+ * level and an optional JSON payload.
  * Entries older than days() are pruned daily.
  */
 final class Log
@@ -15,7 +16,7 @@ final class Log
     private const DEFAULT_DAYS = 90;
 
     /** Bump when the table changes; the table is upgraded on the next load. */
-    private const SCHEMA = '4';
+    private const SCHEMA = '5';
     private const SCHEMA_OPTION = 'intranet_phonelist_log_schema';
 
     private readonly string $table;
@@ -56,8 +57,12 @@ final class Log
      */
     public function register(): void
     {
-        if (get_option(self::SCHEMA_OPTION) !== self::SCHEMA) {
+        $schema = get_option(self::SCHEMA_OPTION);
+        if ($schema !== self::SCHEMA) {
             $this->install();
+            if ($schema !== false && $schema < '5') {
+                $this->db->query("DELETE FROM {$this->table} WHERE action = 'unchanged'"); // No longer logged (5): clear the backlog.
+            }
         }
     }
 

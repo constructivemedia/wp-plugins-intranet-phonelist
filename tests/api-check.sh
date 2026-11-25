@@ -50,7 +50,7 @@ has() { # description needle
 
 T1='2026-10-15T09:00:00+08:00'; T0='2026-10-15T08:00:00+08:00'; T2='2026-10-15T10:00:00+08:00'
 T2_QUERY='2026-10-15T10:00:00%2B08:00' # '+' must be encoded in a query string
-JANE='"first_name":"Jane","last_name":"Api","status":"active","date_of_birth":"1985-09-05"'
+JANE='"first_name":"Jane","last_name":"Api","status":"active","position_number":"P-test-api-1","date_of_birth":"1985-09-05"'
 
 expect "PUT creates" 201 "$(request PUT /staff/test-api-1 "{$JANE,\"updated_at\":\"$T1\"}" token)"
 expect "a body id that differs from the URL is refused" 422 "$(request PUT /staff/test-api-1 "{\"id\":\"test-api-9\",$JANE,\"updated_at\":\"$T1\"}" token)"
@@ -74,7 +74,7 @@ has "record has its private fields" '"date_of_birth":"1985-09-05"'
 expect "a WordPress login can't read" 401 "$(request GET /staff/test-api-1 '' app)"
 expect "GET list filtered by name" 200 "$(request GET '/staff?name=jane%20ap' '' token)"
 has "list finds the record" '"id":"test-api-1"'
-expect "a report" 201 "$(request PUT /staff/test-api-2 "{\"first_name\":\"Rae\",\"last_name\":\"Api\",\"status\":\"active\",\"reports_to\":\"test-api-1\",\"updated_at\":\"$T1\"}" token)"
+expect "a report" 201 "$(request PUT /staff/test-api-2 "{\"first_name\":\"Rae\",\"last_name\":\"Api\",\"status\":\"active\",\"reports_to\":\"P-test-api-1\",\"updated_at\":\"$T1\"}" token)"
 expect "a manager's team" 200 "$(request GET /staff/test-api-1/team '' token)"
 has "team lists the report" '"id":"test-api-2"'
 expect "team of an unknown person" 404 "$(request GET /staff/test-api-nope/team '' token)"
@@ -83,6 +83,7 @@ expect "a batch is processed" 200 "$(request POST /batch "{\"operations\":[{\"op
 has "...counting the division created" '"created":1'
 has "...and the staff member updated" '"updated":1'
 has "...with no problems" '"problems":\[\]'
+has "...with their IDs" '"ids":{"created":\["test-api-D"\],"updated":\["test-api-1"\],"deleted":\[\]}'
 expect "a batch item that fails is listed" 200 "$(request POST /batch '{"operations":[{"op":"delete","type":"staff","id":"test-api-1","data":{}}]}' token)"
 has "...as a problem" '"problems":\[{"id":"test-api-1","type":"staff","op":"delete","result":"invalid"'
 expect "batch needs the token" 401 "$(request POST /batch '{"operations":[]}' wrong)"

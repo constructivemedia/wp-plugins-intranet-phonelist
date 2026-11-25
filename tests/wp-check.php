@@ -83,14 +83,16 @@ try {
     assert($in->put('divisions', 'test-D', ['name' => 'Test Division', 'updated_at' => $t1], 'test-run', 'api')->status === 201);
     assert(get_post_field('post_title', $in->postId('divisions', 'test-D'), 'raw') === 'Test Division');
 
-    // One log row per outcome; private values never logged.
+    // One log row per outcome but unchanged; private values never logged.
     $rows = $wpdb->get_results("SELECT action, context FROM $logTable WHERE source_id = 'test-1' ORDER BY id");
-    assert(array_column($rows, 'action') === ['created', 'unchanged', 'updated', 'stale', 'updated', 'invalid', 'invalid']);
+    assert(array_column($rows, 'action') === ['created', 'updated', 'stale', 'updated', 'invalid', 'invalid']); // unchanged isn't logged
     assert(!str_contains(implode(' ', array_column($rows, 'context')), '1985'));
 
     assert($in->delete('staff', 'test-1', $t0, 'test-run', 'api')->status === 409);
     $deleted = $in->delete('staff', 'test-1', $t2, 'test-run', 'api');
     assert($deleted->result === 'deleted' && $deleted->status === 204 && $in->postId('staff', 'test-1') === 0);
+    $deletedLog = (string) $wpdb->get_var("SELECT context FROM $logTable WHERE source_id = 'test-1' AND action = 'deleted' ORDER BY id DESC LIMIT 1");
+    assert(str_contains($deletedLog, 'j@example.com') && !str_contains($deletedLog, '1985'));                    // the data removed, private values hidden
     assert($in->delete('staff', 'test-1', $t2, 'test-run', 'api')->status === 204);
     assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t1], 'test-run', 'api')->status === 409);       // a deleted record stays deleted for older pushes
     assert($in->put('staff', 'test-1', $jane + ['updated_at' => $t2], 'test-run', 'api')->status === 409);       // ...and for one at the same time: a delete wins ties
@@ -131,7 +133,7 @@ try {
 
     // Relations: linked on write, in any order; a new division gets a company named after it; a division save re-points its staff.
     $link = fn (int $postId, string $name): int => (int) get_post_meta($postId, $name, true);
-    assert($in->put('staff', 'test-s1', $jane + ['division_id' => 'test-RD', 'reports_to' => 'test-s2', 'updated_at' => $t1], 'test-run', 'api')->result === 'created');
+    assert($in->put('staff', 'test-s1', $jane + ['division_id' => 'test-RD', 'reports_to' => 'P-test-s2', 'updated_at' => $t1], 'test-run', 'api')->result === 'created');
     $s1 = $in->postId('staff', 'test-s1');
     assert($link($s1, 'division') === 0 && $link($s1, 'manager') === 0);                       // neither exists yet
     $in->put('divisions', 'test-RD', ['name' => 'Test Relations Division', 'updated_at' => $t1], 'test-run', 'api');
@@ -139,9 +141,9 @@ try {
     $c = $link($d, 'company');
     assert(get_post_field('post_title', $c, 'raw') === 'Test Relations Division');            // company named after it
     assert($link($s1, 'division') === $d && $link($s1, 'company') === $c);
-    $in->put('staff', 'test-s2', ['first_name' => 'Boss'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-s2', ['first_name' => 'Boss', 'position_number' => 'P-test-s2'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     assert($link($s1, 'manager') === $in->postId('staff', 'test-s2'));                         // manager arrived later
-    $in->put('staff', 'test-s3', $jane + ['reports_to' => 'test-s3', 'updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-s3', $jane + ['position_number' => 'P-test-s3', 'reports_to' => 'P-test-s3', 'updated_at' => $t1], 'test-run', 'api');
     assert($link($in->postId('staff', 'test-s3'), 'manager') === 0);                           // never their own manager
     $other = wp_insert_post(['post_type' => PostTypes::COMPANY, 'post_status' => 'publish', 'post_title' => 'Test Other Co']);
     update_field('field_iphl_division_company', $other, $d);
@@ -227,15 +229,17 @@ try {
     assert($link($hd, 'company') === $other && get_post($other) !== null);
     assert($link($in->postId('divisions', 'test-ND'), 'company') === $link($md, 'company'));
 
-    // Org chart: a manager's team and a person's manager, from reports_to.
-    $in->put('staff', 'test-o1', ['first_name' => 'Boss', 'last_name' => 'Testerson'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
-    $in->put('staff', 'test-o2', ['first_name' => 'Ava', 'last_name' => 'Testerson', 'reports_to' => 'test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
-    $in->put('staff', 'test-o3', ['first_name' => 'Ben', 'last_name' => 'Testerson', 'reports_to' => 'test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    // Org chart: a manager's team and a person's manager, from reports_to (the manager's position number).
+    $in->put('staff', 'test-o1', ['first_name' => 'Boss', 'last_name' => 'Testerson', 'position_number' => 'P-test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-o2', ['first_name' => 'Ava', 'last_name' => 'Testerson', 'reports_to' => 'P-test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-o3', ['first_name' => 'Ben', 'last_name' => 'Testerson', 'reports_to' => 'P-test-o1'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     assert(array_map(fn ($person) => $person->id, Phonelist::team('test-o1')) === ['test-o2', 'test-o3']);
     assert(Phonelist::manager('test-o2')?->id === 'test-o1' && Phonelist::manager('test-o1') === null && Phonelist::team('test-nobody') === []);
     assert(Phonelist::staff(name: 'Ava Testerson')[0]->reportsTo === 'test-o1');
-    $in->put('staff', 'test-o4', ['first_name' => 'Cee', 'last_name' => 'Testerson', 'reports_to' => 'test-o4'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
+    $in->put('staff', 'test-o4', ['first_name' => 'Cee', 'last_name' => 'Testerson', 'position_number' => 'P-test-o4', 'reports_to' => 'P-test-o4'] + $jane + ['updated_at' => $t1], 'test-run', 'api');
     assert(Phonelist::manager('test-o4') === null && Phonelist::team('test-o4') === [] && Phonelist::team('') === []); // never their own manager
+    $in->put('staff', 'test-o1', ['first_name' => 'Boss', 'last_name' => 'Testerson', 'position_number' => 'P-test-o9'] + $jane + ['updated_at' => $t2], 'test-run', 'api');
+    assert($link($in->postId('staff', 'test-o2'), 'manager') === 0);                                       // moved position: no longer their manager
 
     // Divisions and companies, with their staff; a division carries its company, photo included.
     $in->put('divisions', 'test-LD', ['name' => 'Test Listing Division', 'phone' => '9464 7800', 'updated_at' => $t1], 'test-run', 'api');
@@ -259,9 +263,9 @@ try {
     $noId = wp_insert_post(['post_type' => PostTypes::DIVISION, 'post_status' => 'publish', 'post_title' => 'Test No Id Division']);
     assert(current(array_filter(Phonelist::divisions(), fn (Division $division): bool => $division->postId === $noId))->staff === []); // not everyone without a division
 
-    // Upgrade from v1: meta renamed in place (with ACF references), the position-based manager link becomes reports_to, idempotent.
+    // Upgrade from v1: meta renamed in place (with ACF references), the manager link becomes manager, reports_to the v1 position, idempotent.
     $v1 = fn (string $title, array $meta): int => wp_insert_post(['post_type' => PostTypes::STAFF, 'post_status' => 'publish', 'post_title' => $title, 'meta_input' => $meta]);
-    $um = $v1('Test Manager', [PostTypes::SOURCE_ID => 'test-um', 'name_first' => 'Test', 'name_last_co' => 'Manager', 'e_status' => 'active']);
+    $um = $v1('Test Manager', [PostTypes::SOURCE_ID => 'test-um', 'position_no' => 'P9', 'name_first' => 'Test', 'name_last_co' => 'Manager', 'e_status' => 'active']);
     $us = $v1('Test Upgraded', [PostTypes::SOURCE_ID => 'test-us', 'name_first' => 'Old', '_name_first' => 'field_iphl_staff_name_first', 'name_last_co' => 'Upgraded',
         'pref_name' => '', 'div_code' => 'test-UD', 'tag' => '20', 'ph_ext' => '+61894647800', 'dob' => '19850905', 'on_leave' => '', 'hide_birthday' => 'y',
         'reports_to' => [$um], '_reports_to' => 'field_iphl_staff_link_reports_to', 'reports_to_id' => 'P9', 'full_name' => 'OLD UPGRADED', 'id' => 'test-us', 'e_status' => 'active']);
@@ -279,7 +283,7 @@ try {
     assert($m($us, 'first_name') === 'Old' && $m($us, '_first_name') === 'field_iphl_staff_first_name' && !metadata_exists('post', $us, 'name_first'));
     assert($m($us, 'division_id') === 'test-UD' && $m($us, 'department_code') === '20' && $m($us, 'phone') === '+61894647800' && $m($us, 'date_of_birth') === '19850905');
     assert($m($us, 'hide_birthday') === '1' && $m($us, 'status') === 'active');
-    assert((int) $m($us, 'manager') === $um && $m($us, 'reports_to') === 'test-um' && $m($us, '_manager') === PostTypes::linkKey('manager'));
+    assert((int) $m($us, 'manager') === $um && $m($us, 'reports_to') === 'P9' && $m($us, '_manager') === PostTypes::linkKey('manager'));
     assert(!metadata_exists('post', $us, 'full_name') && !metadata_exists('post', $us, 'reports_to_id') && !metadata_exists('post', $us, 'id'));
     assert($m($us, PostTypes::UPDATED_AT) === Upgrade::EPOCH);
     assert($m($ud, 'address_line1') === '1 Test St' && !metadata_exists('post', $ud, 'fax') && !metadata_exists('post', $ud, 'div_code') && !metadata_exists('post', $ud, 'div_name'));
@@ -299,7 +303,8 @@ try {
     $report = Ingestor::report([...$results, ['id' => 'test-w', 'result' => 'unchanged', 'warnings' => [['field' => 'mobile', 'message' => '…']]]]);
     assert($report['created'] === 2 && $report['updated'] === 0 && $report['unchanged'] === 1 && $report['deleted'] === 0 && $report['invalid'] === 2);
     assert(!isset($report['stale']) && array_column($report['problems'], 'result') === ['invalid', 'invalid', 'unchanged']);
-    assert(Ingestor::report([]) === ['created' => 0, 'updated' => 0, 'unchanged' => 0, 'deleted' => 0, 'problems' => []]);
+    assert($report['ids'] === ['created' => ['test-b1', 'test-BD'], 'updated' => [], 'deleted' => []]);
+    assert(Ingestor::report([]) === ['created' => 0, 'updated' => 0, 'unchanged' => 0, 'deleted' => 0, 'ids' => ['created' => [], 'updated' => [], 'deleted' => []], 'problems' => []]);
 
     // Snapshot of one type deletes that type's records (with a Data Hub ID) missing from it. Companies here, so no real
     // records are at risk: locally only test companies have a Data Hub ID.

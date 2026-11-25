@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: JWH Intranet Phonelist API
-  version: 2.4.0
+  version: 2.5.0
   summary: Push companies, divisions and staff from Data Hub into the JWH intranet phone list.
   contact:
     name: Constructive Media
@@ -116,7 +116,7 @@ paths:
                   department_code: '20'
                   department: Construction
                   division_id: JWH
-                  reports_to: '10007'
+                  reports_to: P1001
                   status: active
                   start_date: '2011-03-14'
                   on_leave_until: null
@@ -277,7 +277,7 @@ paths:
                 value:
                   records:
                     - { id: '10423', updated_at: '2026-10-15T09:30:00+08:00', first_name: Jane, last_name: Citizen, status: active, division_id: JWH, position: JWH Estimator, mobile: '0437 793 226' }
-                    - { id: '10424', updated_at: '2026-09-02T14:10:00+08:00', first_name: Sam, last_name: Example, status: active, division_id: BNB, reports_to: '10423' }
+                    - { id: '10424', updated_at: '2026-09-02T14:10:00+08:00', first_name: Sam, last_name: Example, status: active, division_id: BNB, reports_to: P1001 }
               divisions:
                 summary: Divisions (PUT /divisions)
                 value:
@@ -322,7 +322,7 @@ paths:
       operationId: getTeam
       tags: [Read]
       summary: A manager's team
-      description: Staff whose `reports_to` is this person, sorted by name.
+      description: Staff whose `reports_to` is this person's `position_number`, sorted by name.
       parameters:
         - $ref: '#/components/parameters/Id'
       responses:
@@ -447,7 +447,7 @@ components:
         department: Construction
         division_id: JWH
         company_id: '1'
-        reports_to: '10007'
+        reports_to: P1001
         status: active
         start_date: '2011-03-14'
         on_leave_until: null
@@ -484,7 +484,7 @@ components:
           examples:
             all_good:
               summary: Everything went in
-              value: { created: 2, updated: 14, unchanged: 1210, deleted: 1, problems: [] }
+              value: { created: 2, updated: 14, unchanged: 1210, deleted: 1, ids: { created: ['10441', '10442'], updated: ['10007', '10123'], deleted: ['10388'] }, problems: [] }
             with_problems:
               summary: Some records need a look
               value:
@@ -494,6 +494,7 @@ components:
                 deleted: 0
                 invalid: 2
                 error: 1
+                ids: { created: [], updated: ['10007', '10123', '10440'], deleted: [] }
                 problems:
                   - { id: '10424', type: staff, op: put, result: invalid, errors: [{ field: status, message: 'Must be one of: active, inactive.' }] }
                   - { id: null, type: staff, op: put, result: invalid, errors: [{ field: id, message: 'Required: the Data Hub ID, as a string.' }] }
@@ -610,7 +611,7 @@ components:
         department: { $ref: '#/components/schemas/Text' }
         division_id: { $ref: '#/components/schemas/Text', description: "The division's Data Hub ID." }
         company_id: { $ref: '#/components/schemas/Text', description: Stored as sent. The company shown comes from the division. }
-        reports_to: { $ref: '#/components/schemas/Text', description: "The manager's staff ID." }
+        reports_to: { $ref: '#/components/schemas/Text', description: "The manager's position number (their `position_number`)." }
         status:
           type: string
           description: '`active` is on the phone list. `inactive` removes them, and a PUT replies `200` with `result: deleted`. Anything else is refused with `422`.'
@@ -637,7 +638,7 @@ components:
       description: |
         A count per result. `created`, `updated`, `unchanged` and `deleted` are always present; `stale`, `invalid`,
         `not_found` and `error` only when they happened.
-      required: [created, updated, unchanged, deleted, problems]
+      required: [created, updated, unchanged, deleted, ids, problems]
       properties:
         created: { type: integer }
         updated: { type: integer }
@@ -647,6 +648,13 @@ components:
         invalid: { type: integer }
         not_found: { type: integer }
         error: { type: integer }
+        ids:
+          type: object
+          description: The IDs of the records created, updated and deleted. Records deleted for having no Data Hub ID aren't listed.
+          properties:
+            created: { type: array, items: { type: string } }
+            updated: { type: array, items: { type: string } }
+            deleted: { type: array, items: { type: string } }
         problems:
           type: array
           description: Only the records that didn't go in, or went in with warnings. Empty when everything went in cleanly.

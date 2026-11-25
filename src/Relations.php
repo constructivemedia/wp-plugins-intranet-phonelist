@@ -10,7 +10,7 @@ use wpdb;
  * - a staff member links to their division, its company and their manager, if those exist yet;
  * - a new division gets its company from COMPANIES (else one named after it; created if needed) and links the staff
  *   waiting on it;
- * - a new staff member becomes the manager of anyone already reporting to them.
+ * - a staff member becomes the manager of anyone already reporting to their position number.
  * The one listener: saving a division in the admin re-points its staff to its company.
  */
 final class Relations
@@ -49,12 +49,13 @@ final class Relations
      */
     public function afterWrite(string $type, int $postId, bool $created): array
     {
-        $id = (string) get_post_meta($postId, PostTypes::SOURCE_ID, true);
         $changes = [];
 
         if ($type === 'staff') {
             $this->linkStaff($postId);
-            foreach ($this->staffWhere('reports_to', $id) as $report) {
+            // Whoever reports to their position, and whoever they managed before (their position may have changed).
+            $reports = [...$this->staffWhere('reports_to', (string) get_post_meta($postId, 'position_number', true)), ...$this->staffWhere('manager', (string) $postId)];
+            foreach (array_unique($reports) as $report) {
                 $this->linkStaff($report);
             }
         } elseif ($type === 'divisions') {
@@ -178,13 +179,13 @@ final class Relations
     }
 
     /**
-     * Set a staff member's division, company and manager from division_id, the division's company and reports_to.
-     * Only changed links are written.
+     * Set a staff member's division, company and manager from division_id, the division's company and reports_to
+     * (a position number: the manager is whoever holds it). Only changed links are written.
      */
     private function linkStaff(int $staffPostId): void
     {
         $division = PostTypes::postId(PostTypes::DIVISION, (string) get_post_meta($staffPostId, 'division_id', true));
-        $manager = PostTypes::postId(PostTypes::STAFF, (string) get_post_meta($staffPostId, 'reports_to', true));
+        $manager = $this->staffWhere('position_number', (string) get_post_meta($staffPostId, 'reports_to', true))[0] ?? 0; // ponytail: a shared position number picks the first holder
         $links = [
             'division' => $division,
             'company' => $division ? (int) get_post_meta($division, 'company', true) : 0,

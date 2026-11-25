@@ -75,7 +75,7 @@ final class Upgrade
         $counts = ['renamed' => 0, 'dropped' => 0, 'managers' => 0];
 
         // The v1 manager link (an array of post IDs on 'reports_to') becomes 'manager' (one post ID), and 'reports_to'
-        // becomes the manager's Data Hub ID, as Data Hub will send it.
+        // becomes the manager's position number (v1's reports_to_id), as Data Hub sends it.
         $v1Links = $wpdb->get_results($wpdb->prepare(
             "SELECT post_id FROM $wpdb->postmeta WHERE meta_key = '_reports_to' AND meta_value = %s",
             PostTypes::linkKey('reports_to')
@@ -84,7 +84,7 @@ final class Upgrade
             $postId = (int) $row->post_id;
             $manager = (int) (((array) get_post_meta($postId, 'reports_to', true))[0] ?? 0);
             PostTypes::store($postId, PostTypes::linkKey('manager'), 'manager', $manager ?: '');
-            PostTypes::store($postId, PostTypes::fieldKey(PostTypes::STAFF, 'reports_to'), 'reports_to', $manager ? (string) get_post_meta($manager, PostTypes::SOURCE_ID, true) : '');
+            PostTypes::store($postId, PostTypes::fieldKey(PostTypes::STAFF, 'reports_to'), 'reports_to', (string) get_post_meta($postId, 'reports_to_id', true));
             $counts['managers']++;
         }
 

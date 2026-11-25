@@ -23,7 +23,7 @@ final class PostTypes
 
     /**
      * Links stored on each staff member (post IDs), set when records are written (see Relations):
-     * division from division_id, company from the division's Company, manager from reports_to.
+     * division from division_id, company from the division's Company, manager from reports_to (whoever holds that position number).
      */
     public const STAFF_LINKS = [
         'division' => ['label' => 'Division', 'type' => self::DIVISION],

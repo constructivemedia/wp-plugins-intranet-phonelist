@@ -55,13 +55,7 @@ final class Adapter
 
         $progress('Reading Oracle…');
         $staffRows = self::fetch(self::STAFF_TABLE, self::STAFF_COLUMNS);
-        $byPosition = [];
-        foreach ($staffRows as $row) {
-            if (trim($row['POSITION_NO']) !== '') {
-                $byPosition[trim($row['POSITION_NO'])] ??= trim($row['ID']);
-            }
-        }
-        $staff = array_map(fn (array $row): array => self::staff($row, $byPosition, $updatedAt, $today), $staffRows);
+        $staff = array_map(fn (array $row): array => self::staff($row, $updatedAt, $today), $staffRows);
 
         if ($staffId !== null) {
             $record = current(array_filter($staff, fn (array $record): bool => $record['id'] === $staffId));
@@ -114,14 +108,13 @@ final class Adapter
     }
 
     /**
-     * Oracle staff row → contract record. $staffIdByPosition: POSITION_NO => the ID of the person holding it,
-     * so REPORTS_TO_ID (a position) becomes reports_to (a staff ID).
+     * Oracle staff row → contract record. REPORTS_TO_ID is the manager's position number, as reports_to is.
      */
-    public static function staff(array $row, array $staffIdByPosition, string $updatedAt, DateTimeImmutable $today): array
+    public static function staff(array $row, string $updatedAt, DateTimeImmutable $today): array
     {
         $text = fn (string $column): ?string => trim((string) ($row[$column] ?? '')) === '' ? null : trim((string) $row[$column]);
         $id = (string) $text('ID');
-        $manager = $staffIdByPosition[(string) $text('REPORTS_TO_ID')] ?? null;
+        $manager = $text('REPORTS_TO_ID');
         $email = $text('EMAIL');
         $current = strtoupper((string) $text('E_STATUS')) === 'E' && strtoupper((string) $text('PH_EXT')) !== 'LEFT';
 
@@ -146,7 +139,7 @@ final class Adapter
             'department' => $text('TAG_DESCRIPTION'),
             'division_id' => $text('DIV_CODE'),
             'company_id' => $text('COMPANY_ID'),
-            'reports_to' => $manager === $id ? null : $manager,
+            'reports_to' => $manager === $text('POSITION_NO') ? null : $manager,
             'status' => $current ? 'active' : 'inactive',
             'start_date' => self::date((string) $text('START_DATE'), null),
             'on_leave_until' => self::date((string) $text('ON_LEAVE'), null),
